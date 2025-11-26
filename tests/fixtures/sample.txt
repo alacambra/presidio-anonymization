@@ -1,0 +1,13 @@
+Dear John Smith,
+
+Thank you for your inquiry. We have received your message sent from john.smith@example.com.
+
+Your account details:
+- Name: John Smith
+- Phone: 555-123-4567
+- Address: 123 Main Street, New York, NY 10001
+
+Your credit card ending in 1111 has been charged $50.00.
+
+Best regards,
+Customer Service

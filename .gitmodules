@@ -1,0 +1,3 @@
+[submodule "supporting-documentation/ai-software-development"]
+	path = supporting-documentation/ai-software-development
+	url = git@github.com:alacambra/ai-driven-software-development.git
