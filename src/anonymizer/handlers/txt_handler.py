@@ -14,7 +14,7 @@ class TxtHandler:
     @property
     def supported_extensions(self) -> Tuple[str, ...]:
         """Return supported file extensions."""
-        return (".txt",)
+        return (".txt", ".md")
 
     def read(self, path: Path) -> str:
         """

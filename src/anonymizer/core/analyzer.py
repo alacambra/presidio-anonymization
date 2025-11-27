@@ -23,6 +23,7 @@ class PIIAnalyzer:
         self,
         language: str = "en",
         selected_entities: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
     ) -> None:
         """
         Initialize the PII analyzer.
@@ -30,6 +31,7 @@ class PIIAnalyzer:
         Args:
             language: Language code (en, es, de, ca)
             selected_entities: List of entity types to detect. If None, uses default.
+            min_confidence: Minimum confidence threshold. If None, uses config default.
 
         Raises:
             ValueError: If language is not supported
@@ -37,6 +39,7 @@ class PIIAnalyzer:
         self._validate_language(language)
         self.language = language
         self.selected_entities = selected_entities or DEFAULT_SELECTED_ENTITIES.copy()
+        self.min_confidence = min_confidence if min_confidence is not None else MIN_CONFIDENCE_SCORE
         self._engine: Optional[AnalyzerEngine] = None
 
     def _validate_language(self, language: str) -> None:
@@ -112,7 +115,7 @@ class PIIAnalyzer:
         low_confidence: List[PIIEntity] = []
 
         for entity in entities:
-            if entity.score >= MIN_CONFIDENCE_SCORE:
+            if entity.score >= self.min_confidence:
                 high_confidence.append(entity)
             else:
                 low_confidence.append(entity)

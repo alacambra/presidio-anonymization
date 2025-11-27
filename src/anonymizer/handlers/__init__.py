@@ -28,6 +28,7 @@ def get_handler(file_extension: str) -> DocumentHandler:
     """
     handlers: dict[str, type[DocumentHandler]] = {
         ".txt": TxtHandler,
+        ".md": TxtHandler,
         ".docx": DocxHandler,
         ".pdf": PdfHandler,
     }

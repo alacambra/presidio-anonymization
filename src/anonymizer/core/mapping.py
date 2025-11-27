@@ -158,7 +158,7 @@ def save_mapping_to_file(
     )
 
 
-def save_low_confidence_to_file(
+def save_excluded_entities_to_file(
     entities: List[PIIEntity],
     output_path: Path,
     document_name: str,
@@ -166,23 +166,24 @@ def save_low_confidence_to_file(
     min_confidence_score: float,
 ) -> None:
     """
-    Save low-confidence entities to a JSON file for review.
+    Save excluded entities to a JSON file for review.
 
-    These entities were detected but not anonymized due to low confidence scores.
+    These entities were detected above threshold but NOT anonymized because
+    the user deselected them (GUI mode) or were below threshold (CLI/batch mode).
 
     Args:
-        entities: List of low-confidence PII entities
+        entities: List of excluded PII entities
         output_path: Path where to save the JSON file
         document_name: Name of the original document
         language: Language code used for analysis
         min_confidence_score: Minimum confidence threshold used
     """
-    low_confidence_data = {
+    excluded_data = {
         "document": document_name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "language": language,
         "min_confidence_score": min_confidence_score,
-        "note": "These entities were detected but NOT anonymized due to scores below threshold",
+        "note": "These entities were detected but NOT anonymized (user-deselected or below threshold)",
         "entities": [
             {
                 "text": entity.text,
@@ -198,11 +199,15 @@ def save_low_confidence_to_file(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(low_confidence_data, f, indent=2, ensure_ascii=False)
+        json.dump(excluded_data, f, indent=2, ensure_ascii=False)
 
     logger.info(
-        f"low confidence matches saved path:{output_path};entries:{len(entities)}"
+        f"excluded entities saved path:{output_path};entries:{len(entities)}"
     )
+
+
+# Backward compatibility alias
+save_low_confidence_to_file = save_excluded_entities_to_file
 
 
 def load_mapping_from_file(mapping_path: Path) -> Dict[str, Dict[str, Any]]:

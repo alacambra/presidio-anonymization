@@ -30,6 +30,8 @@ def anonymize_file(
         help="Path to the document to anonymize",
         exists=True,
         readable=True,
+        file_okay=True,
+        dir_okay=False,
     ),
     output: Optional[Path] = typer.Option(
         None,
@@ -44,77 +46,48 @@ def anonymize_file(
         help="Language for PII detection (en, es, de, ca)",
         callback=validate_language,
     ),
+    threshold: float = typer.Option(
+        0.7,
+        "-t",
+        "--threshold",
+        help="Minimum confidence threshold (0.0-1.0)",
+        min=0.0,
+        max=1.0,
+    ),
+    auto_select: bool = typer.Option(
+        True,
+        "--auto-select/--no-auto-select",
+        help="Automatically select all entities above threshold (non-interactive mode)",
+    ),
 ) -> None:
     """
     Anonymize a single document.
 
-    Supports .txt, .docx, and .pdf files.
+    Supports .txt, .md, .docx, and .pdf files.
+    In auto-select mode (default), all entities above the threshold are automatically anonymized.
     """
     typer.echo(f"Anonymizing: {input_path}")
     typer.echo(f"Language: {language}")
+    typer.echo(f"Confidence threshold: {threshold}")
 
-    service = AnonymizerService(language=language)
+    service = AnonymizerService(language=language, min_confidence=threshold)
 
-    result = service.anonymize_file(input_path, output)
+    # CLI uses auto-select (no interactive dialog)
+    result = service.anonymize_file_with_selection(
+        input_path,
+        output,
+        selection_callback=None if auto_select else None  # None means use all detected
+    )
+
+    if result is None:
+        typer.echo(typer.style("Anonymization cancelled.", fg=typer.colors.YELLOW))
+        raise typer.Exit(1)
 
     typer.echo("")
     typer.echo(typer.style("Anonymization complete!", fg=typer.colors.GREEN, bold=True))
     typer.echo(f"  Output: {result.output_path}")
     typer.echo(f"  Mapping: {result.mapping_path}")
-    typer.echo(f"  Entities found: {result.entities_count}")
-
-
-@app.command("directory")
-def anonymize_directory(
-    input_dir: Path = typer.Argument(
-        ...,
-        help="Directory containing documents to anonymize",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-    ),
-    output_dir: Path = typer.Option(
-        ...,
-        "-o",
-        "--output",
-        help="Output directory for anonymized documents",
-    ),
-    language: str = typer.Option(
-        DEFAULT_LANGUAGE,
-        "-l",
-        "--language",
-        help="Language for PII detection (en, es, de, ca)",
-        callback=validate_language,
-    ),
-) -> None:
-    """
-    Anonymize all supported documents in a directory.
-
-    Processes .txt, .docx, and .pdf files recursively.
-    """
-    typer.echo(f"Anonymizing directory: {input_dir}")
-    typer.echo(f"Output directory: {output_dir}")
-    typer.echo(f"Language: {language}")
-    typer.echo("")
-
-    service = AnonymizerService(language=language)
-
-    results = service.anonymize_directory(input_dir, output_dir)
-
-    typer.echo("")
-    typer.echo(
-        typer.style(
-            f"Anonymization complete! Processed {len(results)} files.",
-            fg=typer.colors.GREEN,
-            bold=True,
-        )
-    )
-
-    total_entities = sum(r.entities_count for r in results)
-    typer.echo(f"  Total entities anonymized: {total_entities}")
-
-    for result in results:
-        typer.echo(f"  - {result.input_path} -> {result.output_path}")
+    typer.echo(f"  Entities anonymized: {result.entities_count}")
 
 
 @app.command("languages")

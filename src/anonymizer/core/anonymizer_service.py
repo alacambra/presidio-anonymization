@@ -1,7 +1,7 @@
 """Main anonymizer service - entry point for all interfaces."""
 
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 from ..config import (
     DEFAULT_LANGUAGE,
@@ -15,7 +15,7 @@ from .analyzer import PIIAnalyzer
 from .mapping import (
     PlaceholderMapper,
     anonymize_text_with_mapping,
-    save_low_confidence_to_file,
+    save_excluded_entities_to_file,
     save_mapping_to_file,
 )
 from .models import AnonymizationResult, DocumentResult, PIIEntity
@@ -35,6 +35,7 @@ class AnonymizerService:
         self,
         language: str = DEFAULT_LANGUAGE,
         selected_entities: Optional[List[str]] = None,
+        min_confidence: Optional[float] = None,
     ) -> None:
         """
         Initialize the anonymizer service.
@@ -42,19 +43,26 @@ class AnonymizerService:
         Args:
             language: Language code for PII detection (en, es, de, ca)
             selected_entities: List of entity types to detect. If None, uses all defaults.
+            min_confidence: Minimum confidence threshold. If None, uses config default.
         """
         self.language = language
         self.selected_entities = selected_entities or DEFAULT_SELECTED_ENTITIES.copy()
+        self.min_confidence = min_confidence if min_confidence is not None else MIN_CONFIDENCE_SCORE
         self._analyzer: Optional[PIIAnalyzer] = None
 
         logger.info(
-            f"service initialized language:{language};entities:{len(self.selected_entities)}"
+            f"service initialized language:{language};entities:{len(self.selected_entities)};"
+            f"threshold:{self.min_confidence}"
         )
 
     def _get_analyzer(self) -> PIIAnalyzer:
         """Get or create the PII analyzer (lazy initialization)."""
         if self._analyzer is None:
-            self._analyzer = PIIAnalyzer(self.language, self.selected_entities)
+            self._analyzer = PIIAnalyzer(
+                self.language,
+                self.selected_entities,
+                min_confidence=self.min_confidence
+            )
         return self._analyzer
 
     def anonymize_text(self, text: str) -> tuple[AnonymizationResult, List[PIIEntity]]:
@@ -122,16 +130,16 @@ class AnonymizerService:
             output_path=mapping_path,
             document_name=input_path.name,
             language=self.language,
-            min_confidence_score=MIN_CONFIDENCE_SCORE,
+            min_confidence_score=self.min_confidence,
         )
 
         if low_confidence:
-            save_low_confidence_to_file(
+            save_excluded_entities_to_file(
                 entities=low_confidence,
                 output_path=low_confidence_path,
                 document_name=input_path.name,
                 language=self.language,
-                min_confidence_score=MIN_CONFIDENCE_SCORE,
+                min_confidence_score=self.min_confidence,
             )
 
         return DocumentResult(
@@ -142,61 +150,135 @@ class AnonymizerService:
             entities_count=len(result.entities_found),
         )
 
-    def anonymize_directory(
+    def anonymize_file_with_selection(
         self,
-        input_dir: Union[Path, str],
-        output_dir: Union[Path, str],
-    ) -> List[DocumentResult]:
+        input_path: Union[Path, str],
+        output_path: Optional[Union[Path, str]] = None,
+        selection_callback: Optional[Callable[[List[PIIEntity], str], Optional[List[PIIEntity]]]] = None,
+    ) -> Optional[DocumentResult]:
         """
-        Anonymize all supported files in a directory.
+        Anonymize a document file with user selection of entities.
+
+        Workflow:
+        1. Detect all entities >= threshold
+        2. Call selection_callback to let user choose entities
+        3. Anonymize only selected entities
+        4. Save excluded entities to *_excluded_entities.json
 
         Args:
-            input_dir: Directory containing documents to anonymize
-            output_dir: Directory where to save anonymized documents
+            input_path: Path to the input document
+            output_path: Optional path for output. If None, creates alongside input.
+            selection_callback: Function that receives (entities, text) and returns selected entities.
+                              If None or returns None, operation is cancelled.
 
         Returns:
-            List of DocumentResult for each processed file
+            DocumentResult with paths and statistics, or None if cancelled
         """
-        input_dir = Path(input_dir)
-        output_dir = Path(output_dir)
+        input_path = Path(input_path)
+        output_path = self._resolve_output_path(input_path, output_path)
+        mapping_path = self._get_mapping_path(output_path)
+        excluded_path = self._get_low_confidence_path(output_path)
 
-        logger.info(f"anonymizing directory input_dir:{input_dir};output_dir:{output_dir}")
+        logger.info(f"anonymizing file with selection input:{input_path};output:{output_path}")
 
-        self._validate_directory(input_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        self._validate_file_extension(input_path)
 
-        results: List[DocumentResult] = []
-        files = self._find_supported_files(input_dir)
+        handler = get_handler(input_path.suffix)
+        text = handler.read(input_path)
 
-        for file_path in files:
-            relative_path = file_path.relative_to(input_dir)
-            output_path = output_dir / relative_path
+        # Detect all entities
+        analyzer = self._get_analyzer()
+        all_entities_above_threshold, below_threshold = analyzer.analyze(text)
 
-            result = self.anonymize_file(file_path, output_path)
-            results.append(result)
+        logger.info(
+            f"detection complete above_threshold:{len(all_entities_above_threshold)};"
+            f"below_threshold:{len(below_threshold)}"
+        )
 
-        logger.info(f"directory anonymization complete files_processed:{len(results)}")
+        # Let user select entities
+        if selection_callback:
+            selected_entities = selection_callback(all_entities_above_threshold, text)
 
-        return results
+            if selected_entities is None:
+                # User cancelled
+                logger.info("anonymization cancelled by user")
+                return None
+        else:
+            # No callback: use all detected entities
+            selected_entities = all_entities_above_threshold
+
+        # Split into selected (anonymize) and excluded (user deselected)
+        selected_set = set(id(e) for e in selected_entities)
+        excluded_entities = [
+            e for e in all_entities_above_threshold
+            if id(e) not in selected_set
+        ]
+
+        logger.info(
+            f"user selection complete selected:{len(selected_entities)};"
+            f"excluded:{len(excluded_entities)}"
+        )
+
+        # Anonymize only selected entities
+        mapper = PlaceholderMapper()
+        anonymized_text, mappings = anonymize_text_with_mapping(text, selected_entities, mapper)
+
+        # Write anonymized document
+        handler.write(output_path, anonymized_text)
+
+        # Save mapping (only selected entities)
+        save_mapping_to_file(
+            mapping=mappings,
+            output_path=mapping_path,
+            document_name=input_path.name,
+            language=self.language,
+            min_confidence_score=self.min_confidence,
+        )
+
+        # Save excluded entities (user-deselected only, with scores)
+        if excluded_entities:
+            save_excluded_entities_to_file(
+                entities=excluded_entities,
+                output_path=excluded_path,
+                document_name=input_path.name,
+                language=self.language,
+                min_confidence_score=self.min_confidence,
+            )
+
+        return DocumentResult(
+            input_path=str(input_path),
+            output_path=str(output_path),
+            mapping_path=str(mapping_path),
+            language=self.language,
+            entities_count=len(selected_entities),
+        )
 
     def _resolve_output_path(
         self, input_path: Path, output_path: Optional[Union[Path, str]]
     ) -> Path:
-        """Resolve the output path, creating a default if not provided."""
+        """Resolve the output path, ensuring it doesn't overwrite the input."""
         if output_path is not None:
-            return Path(output_path)
+            output_path = Path(output_path)
+            # Check if output would overwrite input
+            if output_path.resolve() == input_path.resolve():
+                # Add .anonym before extension to prevent overwrite
+                stem = input_path.stem
+                suffix = input_path.suffix
+                output_path = input_path.parent / f"{stem}.anonym{suffix}"
+            return output_path
 
+        # Default: add .anonym before extension
         stem = input_path.stem
         suffix = input_path.suffix
-        return input_path.parent / f"{stem}_anonymized{suffix}"
+        return input_path.parent / f"{stem}.anonym{suffix}"
 
     def _get_mapping_path(self, output_path: Path) -> Path:
         """Get the mapping file path based on the output path."""
         return output_path.parent / f"{output_path.stem}_mapping.json"
 
     def _get_low_confidence_path(self, output_path: Path) -> Path:
-        """Get the low-confidence matches file path based on the output path."""
-        return output_path.parent / f"{output_path.stem}_low_confidence.json"
+        """Get the excluded entities file path based on the output path."""
+        return output_path.parent / f"{output_path.stem}_excluded_entities.json"
 
     def _validate_file_extension(self, path: Path) -> None:
         """Validate that the file extension is supported."""
@@ -205,17 +287,3 @@ class AnonymizerService:
             raise ValueError(
                 f"Unsupported file type: {path.suffix}. Supported: {supported}"
             )
-
-    def _validate_directory(self, path: Path) -> None:
-        """Validate that the path is a directory."""
-        if not path.is_dir():
-            raise ValueError(f"Not a directory: {path}")
-
-    def _find_supported_files(self, directory: Path) -> List[Path]:
-        """Find all supported files in a directory recursively."""
-        files: List[Path] = []
-
-        for ext in SUPPORTED_FILE_EXTENSIONS:
-            files.extend(directory.rglob(f"*{ext}"))
-
-        return sorted(files)

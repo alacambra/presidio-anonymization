@@ -1,11 +1,12 @@
 """Handler for Word documents (.docx)."""
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 from docx import Document  # type: ignore[import-untyped]
+from docx.document import Document as DocumentClass  # type: ignore[import-untyped]
+from docx.section import _Footer, _Header  # type: ignore[import-untyped]
 from docx.table import Table  # type: ignore[import-untyped]
-from docx.text.paragraph import Paragraph  # type: ignore[import-untyped]
 
 from ..logger import setup_logger
 
@@ -38,7 +39,7 @@ class DocxHandler:
         """
         logger.info(f"reading docx file path:{path}")
 
-        doc = Document(path)
+        doc = Document(str(path))
         text_parts: List[str] = []
 
         text_parts.extend(self._extract_paragraphs(doc))
@@ -50,11 +51,11 @@ class DocxHandler:
         logger.info(f"docx file read path:{path};length:{len(content)}")
         return content
 
-    def _extract_paragraphs(self, doc: Document) -> List[str]:
+    def _extract_paragraphs(self, doc: DocumentClass) -> List[str]:
         """Extract text from all paragraphs."""
         return [para.text for para in doc.paragraphs if para.text.strip()]
 
-    def _extract_tables(self, doc: Document) -> List[str]:
+    def _extract_tables(self, doc: DocumentClass) -> List[str]:
         """Extract text from all tables."""
         table_texts: List[str] = []
 
@@ -74,7 +75,7 @@ class DocxHandler:
 
         return texts
 
-    def _extract_headers_footers(self, doc: Document) -> List[str]:
+    def _extract_headers_footers(self, doc: DocumentClass) -> List[str]:
         """Extract text from headers and footers."""
         texts: List[str] = []
 
@@ -89,7 +90,7 @@ class DocxHandler:
 
         return texts
 
-    def _get_header_footer_text(self, header_footer: Paragraph) -> str:
+    def _get_header_footer_text(self, header_footer: Union[_Header, _Footer]) -> str:
         """Extract text from a header or footer."""
         paragraphs = [p.text for p in header_footer.paragraphs if p.text.strip()]
         return "\n".join(paragraphs)
@@ -115,6 +116,6 @@ class DocxHandler:
             if paragraph_text.strip():
                 doc.add_paragraph(paragraph_text)
 
-        doc.save(path)
+        doc.save(str(path))
 
         logger.info(f"docx file written path:{path};paragraphs:{len(paragraphs)}")

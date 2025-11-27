@@ -6,7 +6,7 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
     "en": "en_core_web_sm",
     "es": "es_core_news_sm",
     "de": "de_core_news_md",
-    "ca": "ca_core_news_sm",
+    "ca": "ca_core_news_lg",
 }
 
 # All available entity types for PII detection
@@ -28,6 +28,7 @@ SUPPORTED_FILE_EXTENSIONS: List[str] = [
     ".txt",
     ".docx",
     ".pdf",
+    ".md"
 ]
 
 DEFAULT_LANGUAGE: str = "en"
