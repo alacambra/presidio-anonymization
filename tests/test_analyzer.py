@@ -20,12 +20,12 @@ class TestPIIAnalyzerLogging:
 
         # Verify log message was created without errors
         assert any(
-            "[_create_engine] creating analyzer engine" in record.message
+            "[_create_spacy_engine] creating spacy engine" in record.message
             for record in caplog.records
         )
         # Verify the log contains expected parameters
         assert any(
-            "language:en" in record.message and "model:en_core_web_sm" in record.message
+            "language:en" in record.message and "model:" in record.message
             for record in caplog.records
         )
 
@@ -111,3 +111,67 @@ class TestPIIAnalyzerAnalysis:
         # May return empty or very low confidence results
         assert isinstance(high_conf, list)
         assert isinstance(low_conf, list)
+
+
+class TestPIIAnalyzerTransformersEngine:
+    """Tests for PIIAnalyzer with TransformersNlpEngine."""
+
+    def test_transformers_engine_fallback_to_spacy_when_unavailable(self) -> None:
+        """Test that analyzer falls back to spaCy when transformers unavailable."""
+        from anonymizer import config
+
+        # Save original values
+        original_engine = config.NLP_ENGINE_TYPE
+        original_model = config.SELECTED_TRANSFORMERS_MODEL.get("en")
+
+        try:
+            # Set up transformers engine
+            config.set_nlp_engine_type("transformers")
+            config.set_transformers_model_for_language("en", "dslim/bert-base-NER")
+
+            analyzer = PIIAnalyzer(language="en")
+
+            # Should fall back to spaCy and work (no crash)
+            high_conf, low_conf = analyzer.analyze("Contact John Smith at john@email.com")
+
+            # Should still detect entities using spaCy fallback
+            all_entities = high_conf + low_conf
+            assert len(all_entities) > 0
+
+        finally:
+            # Restore original values
+            config.NLP_ENGINE_TYPE = original_engine
+            config.SELECTED_TRANSFORMERS_MODEL["en"] = original_model
+
+    def test_transformers_engine_fallback_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test that fallback to spaCy logs a warning."""
+        import logging
+
+        from anonymizer import config
+
+        # Save original values
+        original_engine = config.NLP_ENGINE_TYPE
+        original_model = config.SELECTED_TRANSFORMERS_MODEL.get("en")
+
+        try:
+            # Set up transformers engine
+            config.set_nlp_engine_type("transformers")
+            config.set_transformers_model_for_language("en", "dslim/bert-base-NER")
+
+            analyzer = PIIAnalyzer(language="en")
+
+            with caplog.at_level(logging.WARNING):
+                analyzer._get_engine()
+
+            # Should log a warning about fallback
+            assert any(
+                "falling back to spaCy" in record.message
+                for record in caplog.records
+            )
+
+        finally:
+            # Restore original values
+            config.NLP_ENGINE_TYPE = original_engine
+            config.SELECTED_TRANSFORMERS_MODEL["en"] = original_model

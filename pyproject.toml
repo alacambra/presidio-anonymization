@@ -26,6 +26,9 @@ dev = [
 build = [
     "pyinstaller>=6.0.0",
 ]
+transformers = [
+    "spacy-huggingface-pipelines>=0.0.4",
+]
 
 [project.scripts]
 anonymize = "anonymizer.ports.cli:app"

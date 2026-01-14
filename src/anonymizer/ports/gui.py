@@ -1,20 +1,31 @@
 """Tkinter GUI interface for document anonymization."""
 
 import json
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ..config import (
     AVAILABLE_MODELS,
+    AVAILABLE_TRANSFORMERS_MODELS,
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
+    SELECTED_TRANSFORMERS_MODEL,
     SUPPORTED_ENTITIES,
     SUPPORTED_FILE_EXTENSIONS,
     SUPPORTED_LANGUAGES,
+    download_transformers_model,
+    get_nlp_engine_type,
+    get_transformers_model_for_language,
+    install_huggingface_pipelines,
+    is_huggingface_pipelines_available,
     is_model_installed,
+    is_transformers_model_cached,
     set_model_for_language,
+    set_nlp_engine_type,
+    set_transformers_model_for_language,
 )
 from ..core.anonymizer_service import AnonymizerService
 from ..core.models import DocumentResult, PIIEntity
@@ -41,6 +52,7 @@ class AnonymizerGUI:
         self.threshold_label: Optional[ttk.Label] = None
         self.last_mapping_path: Optional[str] = None
         self.entity_vars: Dict[str, tk.BooleanVar] = {}
+        self.model_info_label: Optional[ttk.Label] = None
 
         # Watch for manual changes to input path (typed or pasted)
         self.input_path.trace_add("write", self._on_input_path_changed)
@@ -100,17 +112,25 @@ class AnonymizerGUI:
         """Create the language selection section."""
         ttk.Label(parent, text="Language:").grid(row=2, column=0, sticky="w", pady=5)
 
+        lang_frame = ttk.Frame(parent)
+        lang_frame.grid(row=2, column=1, sticky="ew", pady=5)
+
         language_combo = ttk.Combobox(
-            parent,
+            lang_frame,
             textvariable=self.selected_language,
             values=[f"{code} - {name}" for code, name in LANGUAGE_NAMES.items()],
             state="readonly",
             width=20,
         )
-        language_combo.grid(row=2, column=1, sticky="w", pady=5)
+        language_combo.pack(side="left")
         language_combo.set(f"{DEFAULT_LANGUAGE} - {LANGUAGE_NAMES[DEFAULT_LANGUAGE]}")
 
         language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+
+        # Model info label
+        self.model_info_label = ttk.Label(lang_frame, text="", foreground="gray")
+        self.model_info_label.pack(side="left", padx=(15, 0))
+        self._update_model_info_label()
 
     def _create_threshold_section(self, parent: ttk.Frame) -> None:
         """Create confidence threshold slider section."""
@@ -308,6 +328,106 @@ class AnonymizerGUI:
         selection = self.selected_language.get()
         language_code = selection.split(" - ")[0]
         self.selected_language.set(language_code)
+        self._update_model_info_label()
+
+    def _get_current_model_info(self, language: str) -> str:
+        """Get a description of the currently configured model for a language."""
+        engine_type = get_nlp_engine_type()
+
+        if engine_type == "transformers":
+            transformers_model = get_transformers_model_for_language(language)
+            if transformers_model is not None:
+                # Shorten the model name for display
+                short_name = transformers_model.name.split("/")[-1]
+                return f"Model: {short_name} (transformers)"
+
+        # Default to spaCy
+        spacy_model = SUPPORTED_LANGUAGES.get(language, "")
+        if spacy_model:
+            return f"Model: {spacy_model} (spaCy)"
+        return "Model: not configured"
+
+    def _update_model_info_label(self) -> None:
+        """Update the model info label with current configuration."""
+        if self.model_info_label is None:
+            return
+
+        language = self.selected_language.get().split(" - ")[0]
+        model_info = self._get_current_model_info(language)
+        self.model_info_label.config(text=model_info)
+
+    def _run_with_progress(
+        self,
+        parent: tk.Toplevel,
+        title: str,
+        message: str,
+        task: Callable[[], bool],
+    ) -> bool:
+        """
+        Run a task in a background thread with a progress dialog.
+
+        Args:
+            parent: Parent window for the dialog
+            title: Dialog title
+            message: Message to display
+            task: Function to run (returns True on success, False on failure)
+
+        Returns:
+            True if task succeeded, False otherwise
+        """
+        result: List[bool] = [False]  # Use list to allow modification in nested function
+        error_msg: List[str] = [""]
+
+        # Create progress dialog
+        progress_dialog = tk.Toplevel(parent)
+        progress_dialog.title(title)
+        progress_dialog.geometry("400x120")
+        progress_dialog.transient(parent)
+        progress_dialog.grab_set()
+        progress_dialog.resizable(False, False)
+
+        # Center the dialog
+        progress_dialog.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - 400) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 120) // 2
+        progress_dialog.geometry(f"+{x}+{y}")
+
+        # Message label
+        msg_label = ttk.Label(
+            progress_dialog,
+            text=message,
+            wraplength=380,
+            justify="center"
+        )
+        msg_label.pack(pady=(20, 10), padx=10)
+
+        # Progress bar (indeterminate mode)
+        progress_bar = ttk.Progressbar(
+            progress_dialog,
+            mode="indeterminate",
+            length=350
+        )
+        progress_bar.pack(pady=10, padx=20)
+        progress_bar.start(10)
+
+        def run_task() -> None:
+            try:
+                result[0] = task()
+            except Exception as e:
+                result[0] = False
+                error_msg[0] = str(e)
+            finally:
+                # Schedule dialog close on main thread
+                progress_dialog.after(0, progress_dialog.destroy)
+
+        # Start task in background thread
+        thread = threading.Thread(target=run_task, daemon=True)
+        thread.start()
+
+        # Wait for dialog to close
+        parent.wait_window(progress_dialog)
+
+        return result[0]
 
     def _extract_context(self, text: str, entity: PIIEntity, context_length: int = 50) -> str:
         """
@@ -523,15 +643,19 @@ class AnonymizerGUI:
         return selected_entities
 
     def _show_model_selection_dialog(self) -> None:
-        """Show dialog for selecting spaCy models for each language."""
+        """Show dialog for selecting NLP engine and models."""
         dialog = tk.Toplevel(self.root)
         dialog.title("Configure Language Models")
-        dialog.geometry("550x500")
+        dialog.geometry("650x600")
         dialog.transient(self.root)
         dialog.grab_set()
 
-        # Track selected models (radio button variables per language)
-        model_vars: Dict[str, tk.StringVar] = {}
+        # Track selected models
+        spacy_model_vars: Dict[str, tk.StringVar] = {}
+        transformers_model_vars: Dict[str, tk.StringVar] = {}
+
+        # Engine type variable
+        engine_type_var = tk.StringVar(value=get_nlp_engine_type())
 
         # Main scrollable frame
         canvas = tk.Canvas(dialog)
@@ -546,82 +670,210 @@ class AnonymizerGUI:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        # Header
-        header = ttk.Label(
-            scrollable_frame,
-            text="Select NLP model for each language",
-            font=("", 11, "bold"),
+        # Engine type selection
+        engine_frame = ttk.LabelFrame(
+            scrollable_frame, text="NLP Engine Type", padding=10
         )
-        header.pack(pady=(10, 15), padx=10, anchor="w")
+        engine_frame.pack(fill="x", padx=10, pady=10)
 
-        # Create a frame for each language
+        ttk.Radiobutton(
+            engine_frame,
+            text="spaCy (built-in NER models)",
+            variable=engine_type_var,
+            value="spacy",
+        ).pack(anchor="w")
+
+        ttk.Radiobutton(
+            engine_frame,
+            text="HuggingFace Transformers (custom NER models)",
+            variable=engine_type_var,
+            value="transformers",
+        ).pack(anchor="w")
+
+        ttk.Label(
+            engine_frame,
+            text="Note: Transformers requires 'spacy-huggingface-pipelines' package",
+            font=("", 9, "italic"),
+            foreground="gray",
+        ).pack(anchor="w", pady=(5, 0))
+
+        # spaCy models section
+        spacy_section = ttk.LabelFrame(
+            scrollable_frame, text="spaCy Models", padding=10
+        )
+        spacy_section.pack(fill="x", padx=10, pady=5)
+
         for lang_code, models in AVAILABLE_MODELS.items():
             lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
             current_model = SUPPORTED_LANGUAGES.get(lang_code, "")
 
-            # Language frame
-            lang_frame = ttk.LabelFrame(
-                scrollable_frame, text=f"{lang_name} ({lang_code})", padding=10
-            )
-            lang_frame.pack(fill="x", padx=10, pady=5)
+            lang_frame = ttk.Frame(spacy_section)
+            lang_frame.pack(fill="x", pady=2)
 
-            # Radio variable for this language
+            ttk.Label(lang_frame, text=f"{lang_name}:", width=10).pack(side="left")
+
             model_var = tk.StringVar(value=current_model)
-            model_vars[lang_code] = model_var
+            spacy_model_vars[lang_code] = model_var
 
-            # Create header row
-            header_frame = ttk.Frame(lang_frame)
-            header_frame.pack(fill="x")
-            ttk.Label(header_frame, text="", width=3).pack(side="left")
-            ttk.Label(header_frame, text="Variant", width=8, font=("", 9, "bold")).pack(
-                side="left"
+            model_combo = ttk.Combobox(
+                lang_frame,
+                textvariable=model_var,
+                values=[m.name for m in models],
+                state="readonly",
+                width=25,
             )
-            ttk.Label(header_frame, text="Size", width=8, font=("", 9, "bold")).pack(
-                side="left"
+            model_combo.pack(side="left", padx=5)
+
+            # Show install status
+            def make_status_label(lf: ttk.Frame, mv: tk.StringVar) -> tk.Label:
+                label = tk.Label(lf, text="", width=12)
+                label.pack(side="left")
+
+                def update_status(*args: object) -> None:
+                    installed = is_model_installed(mv.get())
+                    label.config(
+                        text="Installed" if installed else "Not installed",
+                        fg="green" if installed else "gray",
+                    )
+
+                mv.trace_add("write", update_status)
+                update_status()
+                return label
+
+            make_status_label(lang_frame, model_var)
+
+        # Transformers models section
+        transformers_section = ttk.LabelFrame(
+            scrollable_frame, text="HuggingFace Transformer Models (for NER)", padding=10
+        )
+        transformers_section.pack(fill="x", padx=10, pady=5)
+
+        # Show package availability status with install button
+        pkg_status_frame = ttk.Frame(transformers_section)
+        pkg_status_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(pkg_status_frame, text="Transformers support: ").pack(side="left")
+
+        pkg_status_label = tk.Label(pkg_status_frame, text="", width=20)
+        pkg_status_label.pack(side="left")
+
+        pkg_install_btn = ttk.Button(pkg_status_frame, text="Install", width=10)
+        pkg_install_btn.pack(side="left", padx=5)
+
+        def update_pkg_status() -> None:
+            pkg_available = is_huggingface_pipelines_available()
+            if pkg_available:
+                pkg_status_label.config(text="Ready", fg="green")
+                pkg_install_btn.config(state="disabled")
+            else:
+                pkg_status_label.config(text="Not installed", fg="orange")
+                pkg_install_btn.config(state="normal")
+
+        def do_install_pkg() -> None:
+            pkg_install_btn.config(state="disabled")
+            pkg_status_label.config(text="Installing...", fg="blue")
+            dialog.update()
+
+            success, message = install_huggingface_pipelines()
+
+            if success:
+                pkg_status_label.config(text="Ready", fg="green")
+                messagebox.showinfo("Success", "Transformers support installed successfully.")
+            else:
+                pkg_status_label.config(text="Install failed", fg="red")
+                pkg_install_btn.config(state="normal")
+                messagebox.showerror("Error", f"Installation failed:\n{message}")
+
+        pkg_install_btn.config(command=do_install_pkg)
+        update_pkg_status()
+
+        # Store status labels and download buttons for updates
+        transformers_status_labels: Dict[str, tk.Label] = {}
+        transformers_download_btns: Dict[str, ttk.Button] = {}
+
+        for lang_code in LANGUAGE_NAMES.keys():
+            lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
+            available_models = AVAILABLE_TRANSFORMERS_MODELS.get(lang_code, [])
+            current_model = SELECTED_TRANSFORMERS_MODEL.get(lang_code, "") or ""
+
+            lang_frame = ttk.Frame(transformers_section)
+            lang_frame.pack(fill="x", pady=2)
+
+            ttk.Label(lang_frame, text=f"{lang_name}:", width=10).pack(side="left")
+
+            model_var = tk.StringVar(value=current_model)
+            transformers_model_vars[lang_code] = model_var
+
+            model_values = ["(none)"] + [m.name for m in available_models]
+            model_combo = ttk.Combobox(
+                lang_frame,
+                textvariable=model_var,
+                values=model_values,
+                state="readonly",
+                width=35,
             )
-            ttk.Label(header_frame, text="Status", width=12, font=("", 9, "bold")).pack(
-                side="left"
-            )
-            ttk.Label(
-                header_frame, text="Description", width=25, font=("", 9, "bold")
-            ).pack(side="left")
+            model_combo.pack(side="left", padx=5)
 
-            # Create row for each model
-            for model in models:
-                installed = is_model_installed(model.name)
-                status_text = "Installed" if installed else "Not installed"
-                status_color = "green" if installed else "gray"
-
-                row_frame = ttk.Frame(lang_frame)
-                row_frame.pack(fill="x", pady=2)
-
-                # Radio button
-                rb = ttk.Radiobutton(
-                    row_frame, variable=model_var, value=model.name, text=""
-                )
-                rb.pack(side="left")
-
-                # Variant label
-                ttk.Label(row_frame, text=model.variant.upper(), width=6).pack(
+            if not available_models:
+                ttk.Label(lang_frame, text="(no models available)", foreground="gray").pack(
                     side="left"
                 )
-
-                # Size label
-                size_text = (
-                    f"{model.size_mb} MB"
-                    if model.size_mb < 1000
-                    else f"{model.size_mb / 1000:.1f} GB"
-                )
-                ttk.Label(row_frame, text=size_text, width=8).pack(side="left")
-
-                # Status label with color
-                status_label = tk.Label(
-                    row_frame, text=status_text, width=12, fg=status_color
-                )
+            else:
+                # Status label for cached/not cached
+                status_label = tk.Label(lang_frame, text="", width=12)
                 status_label.pack(side="left")
+                transformers_status_labels[lang_code] = status_label
 
-                # Description
-                ttk.Label(row_frame, text=model.description, width=25).pack(side="left")
+                # Download button
+                download_btn = ttk.Button(lang_frame, text="Download", width=10)
+                download_btn.pack(side="left", padx=5)
+                transformers_download_btns[lang_code] = download_btn
+
+                def make_update_status(
+                    _lc: str, mv: tk.StringVar, sl: tk.Label, db: ttk.Button
+                ) -> None:
+                    def update_status(*_args: object) -> None:
+                        model_name = mv.get()
+                        if model_name == "(none)" or model_name == "":
+                            sl.config(text="", fg="gray")
+                            db.config(state="disabled")
+                        else:
+                            cached = is_transformers_model_cached(model_name)
+                            sl.config(
+                                text="Cached" if cached else "Not cached",
+                                fg="green" if cached else "gray",
+                            )
+                            db.config(state="disabled" if cached else "normal")
+
+                    def do_download() -> None:
+                        model_name = mv.get()
+                        if model_name and model_name != "(none)":
+                            db.config(state="disabled")
+                            sl.config(text="Downloading...", fg="blue")
+                            dialog.update()
+                            success = download_transformers_model(model_name)
+                            if success:
+                                sl.config(text="Cached", fg="green")
+                            else:
+                                sl.config(text="Failed", fg="red")
+                                db.config(state="normal")
+
+                    mv.trace_add("write", update_status)
+                    db.config(command=do_download)
+                    update_status()
+
+                make_update_status(
+                    lang_code, model_var, status_label, download_btn
+                )
+
+        # Description of selected transformers model
+        desc_frame = ttk.Frame(transformers_section)
+        desc_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(
+            desc_frame,
+            text="Tip: Medical de-id models (obi/deid_roberta_i2b2, StanfordAIMI) are optimized for healthcare data",
+            font=("", 9, "italic"),
+            foreground="gray",
+        ).pack(anchor="w")
 
         # Pack canvas and scrollbar
         canvas.pack(side="left", fill="both", expand=True)
@@ -632,12 +884,102 @@ class AnonymizerGUI:
         button_frame.pack(fill="x", pady=10, padx=10)
 
         def save_selection() -> None:
-            """Save the selected models."""
-            for lang_code, var in model_vars.items():
+            """Save the selected models and engine type."""
+            # Check if transformers engine selected and collect models to download
+            engine = engine_type_var.get()
+            models_to_download: List[Tuple[str, str, tk.Label, ttk.Button]] = []
+
+            if engine == "transformers":
+                # First check if spacy-huggingface-pipelines is installed
+                if not is_huggingface_pipelines_available():
+                    # Install it with progress dialog
+                    pkg_install_btn.config(state="disabled")
+
+                    success = self._run_with_progress(
+                        dialog,
+                        "Installing Dependencies",
+                        "Installing transformers support package...\n"
+                        "This may take a few minutes.",
+                        lambda: install_huggingface_pipelines()[0]
+                    )
+
+                    if success:
+                        pkg_status_label.config(text="Ready", fg="green")
+                    else:
+                        pkg_status_label.config(text="Install failed", fg="red")
+                        pkg_install_btn.config(state="normal")
+                        messagebox.showerror(
+                            "Error",
+                            "Failed to install transformers support.\n\n"
+                            "Please check your internet connection and try again."
+                        )
+                        return
+
+                # Collect transformers models that need downloading
+                for lang_code, var in transformers_model_vars.items():
+                    selected = var.get()
+                    if selected and selected != "(none)" and selected != "":
+                        if not is_transformers_model_cached(selected):
+                            status_label = transformers_status_labels.get(lang_code)
+                            download_btn = transformers_download_btns.get(lang_code)
+                            if status_label and download_btn:
+                                models_to_download.append(
+                                    (lang_code, selected, status_label, download_btn)
+                                )
+
+            # Download any missing models with progress dialog
+            if models_to_download:
+                for lang_code, model_name, status_label, download_btn in models_to_download:
+                    download_btn.config(state="disabled")
+                    dialog.update()
+
+                    # Get model size for display
+                    model_size = ""
+                    available = AVAILABLE_TRANSFORMERS_MODELS.get(lang_code, [])
+                    for m in available:
+                        if m.name == model_name:
+                            model_size = f" (~{m.size_mb} MB)"
+                            break
+
+                    success = self._run_with_progress(
+                        dialog,
+                        "Downloading Model",
+                        f"Downloading: {model_name}{model_size}\n\n"
+                        "This may take several minutes depending on your connection.",
+                        lambda mn=model_name: download_transformers_model(mn)
+                    )
+
+                    if success:
+                        status_label.config(text="Cached", fg="green")
+                    else:
+                        status_label.config(text="Failed", fg="red")
+                        download_btn.config(state="normal")
+                        messagebox.showerror(
+                            "Error",
+                            f"Failed to download model: {model_name}\n\n"
+                            "Please check your internet connection and try again."
+                        )
+                        return
+
+            # Save engine type
+            set_nlp_engine_type(engine)
+
+            # Save spaCy models
+            for lang_code, var in spacy_model_vars.items():
                 selected = var.get()
                 if selected:
                     set_model_for_language(lang_code, selected)
-            self._log_status("Model configuration updated.")
+
+            # Save transformers models
+            for lang_code, var in transformers_model_vars.items():
+                selected = var.get()
+                if selected == "(none)" or selected == "":
+                    set_transformers_model_for_language(lang_code, None)
+                else:
+                    set_transformers_model_for_language(lang_code, selected)
+
+            self._log_status(f"Model configuration updated. Engine: {engine}")
+            self._update_model_info_label()
             dialog.destroy()
 
         def cancel() -> None:
@@ -682,8 +1024,10 @@ class AnonymizerGUI:
         language = self.selected_language.get().split(" - ")[0]
         threshold = self.confidence_threshold.get() if self.confidence_threshold else 0.7
 
+        model_info = self._get_current_model_info(language)
         self._log_status("Starting anonymization...")
         self._log_status(f"Language: {language}")
+        self._log_status(model_info)
         self._log_status(f"Confidence threshold: {threshold:.2f}")
         self._log_status(f"Entity types: {', '.join(selected_entities)}")
         self.root.update()

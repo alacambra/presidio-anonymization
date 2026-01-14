@@ -5,7 +5,14 @@ from typing import List, Optional
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-from ..config import DEFAULT_SELECTED_ENTITIES, MIN_CONFIDENCE_SCORE, SUPPORTED_LANGUAGES
+from ..config import (
+    DEFAULT_SELECTED_ENTITIES,
+    MIN_CONFIDENCE_SCORE,
+    SUPPORTED_LANGUAGES,
+    TransformersModel,
+    get_nlp_engine_type,
+    get_transformers_model_for_language,
+)
 from ..logger import setup_logger
 from .models import PIIEntity
 
@@ -58,8 +65,29 @@ class PIIAnalyzer:
 
     def _create_engine(self) -> AnalyzerEngine:
         """Create a new Presidio analyzer engine."""
+        engine_type = get_nlp_engine_type()
+        transformers_model = get_transformers_model_for_language(self.language)
+
+        # Use transformers engine if configured and available for this language
+        if engine_type == "transformers" and transformers_model is not None:
+            try:
+                return self._create_transformers_engine(transformers_model)
+            except (ImportError, OSError, ValueError) as e:
+                # spacy-huggingface-pipelines not installed (ValueError: E002)
+                # or model loading failed (OSError/ImportError)
+                # Fall back to spaCy engine
+                logger.warning(
+                    f"[_create_engine] transformers engine failed, falling back to spaCy;"
+                    f"error:{e}"
+                )
+
+        return self._create_spacy_engine()
+
+    def _create_spacy_engine(self) -> AnalyzerEngine:
+        """Create a spaCy-based analyzer engine."""
         logger.info(
-            f"[_create_engine] creating analyzer engine;language:{self.language};model:{SUPPORTED_LANGUAGES[self.language]}"
+            f"[_create_spacy_engine] creating spacy engine;"
+            f"language:{self.language};model:{SUPPORTED_LANGUAGES[self.language]}"
         )
 
         configuration = {
@@ -71,6 +99,33 @@ class PIIAnalyzer:
 
         provider = NlpEngineProvider(nlp_configuration=configuration)
         nlp_engine = provider.create_engine()
+
+        return AnalyzerEngine(
+            nlp_engine=nlp_engine,
+            supported_languages=[self.language],
+        )
+
+    def _create_transformers_engine(self, model: TransformersModel) -> AnalyzerEngine:
+        """Create a HuggingFace transformers-based analyzer engine."""
+        from presidio_analyzer.nlp_engine import TransformersNlpEngine
+
+        logger.info(
+            f"[_create_transformers_engine] creating transformers engine;"
+            f"language:{self.language};model:{model.name};spacy:{model.spacy_model}"
+        )
+
+        models = [
+            {
+                "lang_code": self.language,
+                "model_name": {
+                    "spacy": model.spacy_model,
+                    "transformers": model.name,
+                },
+            }
+        ]
+
+        nlp_engine = TransformersNlpEngine(models=models)
+        nlp_engine.load()
 
         return AnalyzerEngine(
             nlp_engine=nlp_engine,
