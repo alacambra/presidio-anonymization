@@ -47,7 +47,9 @@ class AnonymizerService:
         """
         self.language = language
         self.selected_entities = selected_entities or DEFAULT_SELECTED_ENTITIES.copy()
-        self.min_confidence = min_confidence if min_confidence is not None else MIN_CONFIDENCE_SCORE
+        self.min_confidence = (
+            min_confidence if min_confidence is not None else MIN_CONFIDENCE_SCORE
+        )
         self._analyzer: Optional[PIIAnalyzer] = None
 
         logger.info(
@@ -61,7 +63,7 @@ class AnonymizerService:
             self._analyzer = PIIAnalyzer(
                 self.language,
                 self.selected_entities,
-                min_confidence=self.min_confidence
+                min_confidence=self.min_confidence,
             )
         return self._analyzer
 
@@ -83,7 +85,9 @@ class AnonymizerService:
         high_confidence, low_confidence = analyzer.analyze(text)
 
         mapper = PlaceholderMapper()
-        anonymized_text, mappings = anonymize_text_with_mapping(text, high_confidence, mapper)
+        anonymized_text, mappings = anonymize_text_with_mapping(
+            text, high_confidence, mapper
+        )
 
         result = AnonymizationResult(
             original_text=text,
@@ -154,7 +158,9 @@ class AnonymizerService:
         self,
         input_path: Union[Path, str],
         output_path: Optional[Union[Path, str]] = None,
-        selection_callback: Optional[Callable[[List[PIIEntity], str], Optional[List[PIIEntity]]]] = None,
+        selection_callback: Optional[
+            Callable[[List[PIIEntity], str], Optional[List[PIIEntity]]]
+        ] = None,
     ) -> Optional[DocumentResult]:
         """
         Anonymize a document file with user selection of entities.
@@ -179,7 +185,9 @@ class AnonymizerService:
         mapping_path = self._get_mapping_path(output_path)
         excluded_path = self._get_low_confidence_path(output_path)
 
-        logger.info(f"anonymizing file with selection input:{input_path};output:{output_path}")
+        logger.info(
+            f"anonymizing file with selection input:{input_path};output:{output_path}"
+        )
 
         self._validate_file_extension(input_path)
 
@@ -210,8 +218,7 @@ class AnonymizerService:
         # Split into selected (anonymize) and excluded (user deselected)
         selected_set = set(id(e) for e in selected_entities)
         excluded_entities = [
-            e for e in all_entities_above_threshold
-            if id(e) not in selected_set
+            e for e in all_entities_above_threshold if id(e) not in selected_set
         ]
 
         logger.info(
@@ -221,7 +228,9 @@ class AnonymizerService:
 
         # Anonymize only selected entities
         mapper = PlaceholderMapper()
-        anonymized_text, mappings = anonymize_text_with_mapping(text, selected_entities, mapper)
+        anonymized_text, mappings = anonymize_text_with_mapping(
+            text, selected_entities, mapper
+        )
 
         # Write anonymized document
         handler.write(output_path, anonymized_text)

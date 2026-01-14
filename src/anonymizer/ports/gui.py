@@ -7,10 +7,14 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
 from ..config import (
+    AVAILABLE_MODELS,
     DEFAULT_LANGUAGE,
+    LANGUAGE_NAMES,
     SUPPORTED_ENTITIES,
     SUPPORTED_FILE_EXTENSIONS,
     SUPPORTED_LANGUAGES,
+    is_model_installed,
+    set_model_for_language,
 )
 from ..core.anonymizer_service import AnonymizerService
 from ..core.models import DocumentResult, PIIEntity
@@ -96,22 +100,15 @@ class AnonymizerGUI:
         """Create the language selection section."""
         ttk.Label(parent, text="Language:").grid(row=2, column=0, sticky="w", pady=5)
 
-        language_names = {
-            "en": "English",
-            "es": "Spanish",
-            "de": "German",
-            "ca": "Catalan",
-        }
-
         language_combo = ttk.Combobox(
             parent,
             textvariable=self.selected_language,
-            values=[f"{code} - {name}" for code, name in language_names.items()],
+            values=[f"{code} - {name}" for code, name in LANGUAGE_NAMES.items()],
             state="readonly",
             width=20,
         )
         language_combo.grid(row=2, column=1, sticky="w", pady=5)
-        language_combo.set(f"{DEFAULT_LANGUAGE} - {language_names[DEFAULT_LANGUAGE]}")
+        language_combo.set(f"{DEFAULT_LANGUAGE} - {LANGUAGE_NAMES[DEFAULT_LANGUAGE]}")
 
         language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
 
@@ -251,6 +248,13 @@ class AnonymizerGUI:
             state="disabled",
         )
         self.view_mapping_btn.grid(row=0, column=1, padx=10)
+
+        ttk.Button(
+            button_frame,
+            text="Configure Models...",
+            command=self._show_model_selection_dialog,
+            width=15,
+        ).grid(row=0, column=2, padx=10)
 
     def _browse_input_file(self) -> None:
         """Open file dialog for input file selection."""
@@ -517,6 +521,138 @@ class AnonymizerGUI:
         dialog.wait_window()
 
         return selected_entities
+
+    def _show_model_selection_dialog(self) -> None:
+        """Show dialog for selecting spaCy models for each language."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Configure Language Models")
+        dialog.geometry("550x500")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Track selected models (radio button variables per language)
+        model_vars: Dict[str, tk.StringVar] = {}
+
+        # Main scrollable frame
+        canvas = tk.Canvas(dialog)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Header
+        header = ttk.Label(
+            scrollable_frame,
+            text="Select NLP model for each language",
+            font=("", 11, "bold"),
+        )
+        header.pack(pady=(10, 15), padx=10, anchor="w")
+
+        # Create a frame for each language
+        for lang_code, models in AVAILABLE_MODELS.items():
+            lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
+            current_model = SUPPORTED_LANGUAGES.get(lang_code, "")
+
+            # Language frame
+            lang_frame = ttk.LabelFrame(
+                scrollable_frame, text=f"{lang_name} ({lang_code})", padding=10
+            )
+            lang_frame.pack(fill="x", padx=10, pady=5)
+
+            # Radio variable for this language
+            model_var = tk.StringVar(value=current_model)
+            model_vars[lang_code] = model_var
+
+            # Create header row
+            header_frame = ttk.Frame(lang_frame)
+            header_frame.pack(fill="x")
+            ttk.Label(header_frame, text="", width=3).pack(side="left")
+            ttk.Label(header_frame, text="Variant", width=8, font=("", 9, "bold")).pack(
+                side="left"
+            )
+            ttk.Label(header_frame, text="Size", width=8, font=("", 9, "bold")).pack(
+                side="left"
+            )
+            ttk.Label(header_frame, text="Status", width=12, font=("", 9, "bold")).pack(
+                side="left"
+            )
+            ttk.Label(
+                header_frame, text="Description", width=25, font=("", 9, "bold")
+            ).pack(side="left")
+
+            # Create row for each model
+            for model in models:
+                installed = is_model_installed(model.name)
+                status_text = "Installed" if installed else "Not installed"
+                status_color = "green" if installed else "gray"
+
+                row_frame = ttk.Frame(lang_frame)
+                row_frame.pack(fill="x", pady=2)
+
+                # Radio button
+                rb = ttk.Radiobutton(
+                    row_frame, variable=model_var, value=model.name, text=""
+                )
+                rb.pack(side="left")
+
+                # Variant label
+                ttk.Label(row_frame, text=model.variant.upper(), width=6).pack(
+                    side="left"
+                )
+
+                # Size label
+                size_text = (
+                    f"{model.size_mb} MB"
+                    if model.size_mb < 1000
+                    else f"{model.size_mb / 1000:.1f} GB"
+                )
+                ttk.Label(row_frame, text=size_text, width=8).pack(side="left")
+
+                # Status label with color
+                status_label = tk.Label(
+                    row_frame, text=status_text, width=12, fg=status_color
+                )
+                status_label.pack(side="left")
+
+                # Description
+                ttk.Label(row_frame, text=model.description, width=25).pack(side="left")
+
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Button frame at bottom
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", pady=10, padx=10)
+
+        def save_selection() -> None:
+            """Save the selected models."""
+            for lang_code, var in model_vars.items():
+                selected = var.get()
+                if selected:
+                    set_model_for_language(lang_code, selected)
+            self._log_status("Model configuration updated.")
+            dialog.destroy()
+
+        def cancel() -> None:
+            """Close without saving."""
+            dialog.destroy()
+
+        ttk.Button(button_frame, text="Save", command=save_selection, width=10).pack(
+            side="right", padx=5
+        )
+        ttk.Button(button_frame, text="Cancel", command=cancel, width=10).pack(
+            side="right", padx=5
+        )
+
+        # Wait for dialog
+        dialog.wait_window()
 
     def _on_anonymize_click(self) -> None:
         """Handle anonymize button click."""
