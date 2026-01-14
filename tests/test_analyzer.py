@@ -146,7 +146,7 @@ class TestPIIAnalyzerTransformersEngine:
     def test_transformers_engine_fallback_logs_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Test that fallback to spaCy logs a warning."""
+        """Test that fallback to spaCy logs a warning when transformers fails."""
         import logging
 
         from anonymizer import config
@@ -162,8 +162,14 @@ class TestPIIAnalyzerTransformersEngine:
 
             analyzer = PIIAnalyzer(language="en")
 
-            with caplog.at_level(logging.WARNING):
-                analyzer._get_engine()
+            # Mock _create_transformers_engine to raise ImportError (simulating missing package)
+            with patch.object(
+                analyzer,
+                "_create_transformers_engine",
+                side_effect=ImportError("spacy-huggingface-pipelines not installed"),
+            ):
+                with caplog.at_level(logging.WARNING):
+                    analyzer._get_engine()
 
             # Should log a warning about fallback
             assert any(

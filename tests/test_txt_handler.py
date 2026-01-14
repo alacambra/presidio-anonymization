@@ -12,7 +12,7 @@ class TestTxtHandler:
     def test_supported_extensions(self) -> None:
         """Test that handler reports correct extensions."""
         handler = TxtHandler()
-        assert handler.supported_extensions == (".txt",)
+        assert handler.supported_extensions == (".txt", ".md")
 
     def test_read_file(self) -> None:
         """Test reading a text file."""

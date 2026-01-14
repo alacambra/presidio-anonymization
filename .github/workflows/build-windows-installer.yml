@@ -1,0 +1,123 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'win-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 0.1.0)'
+        required: false
+        default: '0.1.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/win-* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/win-}"
+          else
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[build]"
+
+      - name: Download spaCy model
+        run: python -m spacy download en_core_web_sm
+
+      - name: Build executable with PyInstaller
+        run: pyinstaller build_windows.spec --clean
+
+      - name: Create Inno Setup script
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          mkdir -p installer
+          cat > installer.iss << 'INNOEOF'
+          [Setup]
+          AppName=Document Anonymizer
+          AppVersion=__VERSION__
+          AppPublisher=Albert
+          AppPublisherURL=__REPO_URL__
+          DefaultDirName={autopf}\DocumentAnonymizer
+          DefaultGroupName=Document Anonymizer
+          OutputDir=installer
+          OutputBaseFilename=DocumentAnonymizer-__VERSION__-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          UninstallDisplayIcon={app}\DocumentAnonymizer.exe
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+          [Files]
+          Source: "dist\DocumentAnonymizer.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\Document Anonymizer"; Filename: "{app}\DocumentAnonymizer.exe"
+          Name: "{group}\Uninstall Document Anonymizer"; Filename: "{uninstallexe}"
+          Name: "{autodesktop}\Document Anonymizer"; Filename: "{app}\DocumentAnonymizer.exe"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\DocumentAnonymizer.exe"; Description: "{cm:LaunchProgram,Document Anonymizer}"; Flags: nowait postinstall skipifsilent
+          INNOEOF
+          # Remove leading indentation and substitute variables
+          sed -e 's/^          //' -e "s/__VERSION__/${VERSION}/g" -e "s|__REPO_URL__|${REPO_URL}|g" installer.iss > installer.iss.tmp && mv installer.iss.tmp installer.iss
+
+      - name: Build installer with Inno Setup
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.4
+        with:
+          path: installer.iss
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-${{ steps.version.outputs.version }}-exe
+          path: dist/DocumentAnonymizer.exe
+          retention-days: 30
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-${{ steps.version.outputs.version }}-installer
+          path: installer/DocumentAnonymizer-${{ steps.version.outputs.version }}-Setup.exe
+          retention-days: 30
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/win-')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/DocumentAnonymizer.exe
+            installer/DocumentAnonymizer-${{ steps.version.outputs.version }}-Setup.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

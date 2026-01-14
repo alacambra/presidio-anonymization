@@ -46,7 +46,7 @@ class AnonymizerService:
             min_confidence: Minimum confidence threshold. If None, uses config default.
         """
         self.language = language
-        self.selected_entities = selected_entities or DEFAULT_SELECTED_ENTITIES.copy()
+        self.selected_entities = list(selected_entities) if selected_entities else DEFAULT_SELECTED_ENTITIES.copy()
         self.min_confidence = (
             min_confidence if min_confidence is not None else MIN_CONFIDENCE_SCORE
         )
