@@ -12,8 +12,8 @@ Note: spaCy models are downloaded on-demand by the user when selecting a languag
 block_cipher = None
 
 a = Analysis(
-    ['src/anonymizer/ports/gui.py'],
-    pathex=[],
+    ['launcher.py'],
+    pathex=['src'],
     binaries=[],
     datas=[],
     hiddenimports=[
