@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from anonymizer.handlers.txt_handler import TxtHandler
+from anonymizer.core.handlers.txt_handler import TxtHandler
 
 
 class TestTxtHandler:

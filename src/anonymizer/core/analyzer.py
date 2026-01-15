@@ -10,8 +10,11 @@ from ..config import (
     MIN_CONFIDENCE_SCORE,
     SUPPORTED_LANGUAGES,
     TransformersModel,
+    download_spacy_model,
     get_nlp_engine_type,
     get_transformers_model_for_language,
+    is_frozen,
+    is_model_installed,
 )
 from ..logger import setup_logger
 from .models import PIIEntity
@@ -83,17 +86,41 @@ class PIIAnalyzer:
 
         return self._create_spacy_engine()
 
+    def _ensure_model_available(self, model_name: str) -> None:
+        """
+        Ensure a spaCy model is available, downloading if necessary.
+
+        In frozen apps, uses our download function to avoid subprocess issues.
+        Raises OSError if model cannot be made available.
+        """
+        if is_model_installed(model_name):
+            return
+
+        logger.info(f"[_ensure_model_available] model not installed, downloading;model:{model_name}")
+
+        success, message = download_spacy_model(model_name)
+        if not success:
+            raise OSError(f"Failed to download model {model_name}: {message}")
+
+        logger.info(f"[_ensure_model_available] model downloaded;model:{model_name}")
+
     def _create_spacy_engine(self) -> AnalyzerEngine:
         """Create a spaCy-based analyzer engine."""
+        model_name = SUPPORTED_LANGUAGES[self.language]
+
         logger.info(
             f"[_create_spacy_engine] creating spacy engine;"
-            f"language:{self.language};model:{SUPPORTED_LANGUAGES[self.language]}"
+            f"language:{self.language};model:{model_name}"
         )
+
+        # Ensure model is available before calling Presidio
+        # This prevents Presidio from using subprocess to download in frozen apps
+        self._ensure_model_available(model_name)
 
         configuration = {
             "nlp_engine_name": "spacy",
             "models": [
-                {"lang_code": self.language, "model_name": SUPPORTED_LANGUAGES[self.language]}
+                {"lang_code": self.language, "model_name": model_name}
             ],
         }
 
@@ -113,6 +140,9 @@ class PIIAnalyzer:
             f"[_create_transformers_engine] creating transformers engine;"
             f"language:{self.language};model:{model.name};spacy:{model.spacy_model}"
         )
+
+        # Ensure spaCy model is available (transformers engine still needs it for tokenization)
+        self._ensure_model_available(model.spacy_model)
 
         models = [
             {

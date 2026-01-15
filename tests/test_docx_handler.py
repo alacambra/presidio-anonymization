@@ -5,7 +5,7 @@ from pathlib import Path
 
 from docx import Document
 
-from anonymizer.handlers.docx_handler import DocxHandler
+from anonymizer.core.handlers.docx_handler import DocxHandler
 
 
 class TestDocxHandler:

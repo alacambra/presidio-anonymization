@@ -5,7 +5,7 @@ from pathlib import Path
 
 import fitz
 
-from anonymizer.handlers.pdf_handler import PdfHandler
+from anonymizer.core.handlers.pdf_handler import PdfHandler
 
 
 class TestPdfHandler:

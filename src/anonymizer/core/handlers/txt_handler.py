@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Tuple
 
-from ..logger import setup_logger
+from ...logger import setup_logger
 
 logger = setup_logger(__name__)
 

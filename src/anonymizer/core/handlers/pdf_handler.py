@@ -8,7 +8,7 @@ from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore[import-untyped]
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer  # type: ignore[import-untyped]
 
-from ..logger import setup_logger
+from ...logger import setup_logger
 
 logger = setup_logger(__name__)
 

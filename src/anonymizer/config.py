@@ -1,7 +1,13 @@
 """Configuration constants for the anonymizer."""
 
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+
+def is_frozen() -> bool:
+    """Check if running as a frozen/bundled application (PyInstaller, cx_Freeze, etc.)."""
+    return getattr(sys, "frozen", False)
 
 
 @dataclass
@@ -268,6 +274,88 @@ def is_huggingface_pipelines_available() -> bool:
         return False
 
 
+def _run_pip_install(package_spec: str, timeout: int = 300) -> tuple[bool, str]:
+    """
+    Install a package using pip.
+
+    In frozen apps, uses pip as a library to avoid subprocess issues.
+    In normal Python, uses subprocess for better isolation.
+
+    Args:
+        package_spec: Package name or URL to install
+        timeout: Timeout in seconds (only applies to subprocess method)
+
+    Returns:
+        Tuple of (success, message)
+    """
+    if is_frozen():
+        # In frozen apps, use pip as a library to avoid subprocess re-launching the app
+        try:
+            from pip._internal.cli.main import main as pip_main
+
+            # pip_main returns 0 on success
+            result = pip_main(["install", "--quiet", package_spec])
+            if result == 0:
+                return True, "Installation complete"
+            else:
+                return False, f"pip install returned code {result}"
+        except Exception as e:
+            return False, f"pip install failed: {e}"
+    else:
+        # In normal Python, use subprocess for better isolation
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", package_spec],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0:
+                return True, "Installation complete"
+            else:
+                return False, result.stderr or "Installation failed"
+        except subprocess.TimeoutExpired:
+            return False, "Installation timed out"
+        except Exception as e:
+            return False, str(e)
+
+
+def download_spacy_model(model_name: str) -> tuple[bool, str]:
+    """
+    Download a spaCy model.
+
+    Works in both normal Python and frozen apps (PyInstaller).
+
+    Args:
+        model_name: Name of the spaCy model (e.g., 'en_core_web_trf')
+
+    Returns:
+        Tuple of (success, message)
+    """
+    if is_model_installed(model_name):
+        return True, f"Model {model_name} is already installed"
+
+    # Get the download URL for the model
+    try:
+        import spacy.about
+        from spacy.cli.download_module import get_model_filename, get_version
+
+        # Get version compatibility info
+        version = get_version(model_name, spacy.about.__version__)
+        filename = get_model_filename(model_name, version)
+        base_url = spacy.about.__download_url__
+        if not base_url.endswith("/"):
+            base_url += "/"
+        download_url = base_url + filename
+    except Exception as e:
+        return False, f"Failed to get model URL: {e}"
+
+    # Install the model
+    return _run_pip_install(download_url)
+
+
 def install_huggingface_pipelines() -> tuple[bool, str]:
     """
     Install spacy-huggingface-pipelines package.
@@ -275,24 +363,7 @@ def install_huggingface_pipelines() -> tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
-    import subprocess
-    import sys
-
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "spacy-huggingface-pipelines"],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-        )
-        if result.returncode == 0:
-            return True, "Installation complete"
-        else:
-            return False, result.stderr or "Installation failed"
-    except subprocess.TimeoutExpired:
-        return False, "Installation timed out"
-    except Exception as e:
-        return False, str(e)
+    return _run_pip_install("spacy-huggingface-pipelines")
 
 
 def get_model_for_language(lang_code: str) -> Optional[str]:

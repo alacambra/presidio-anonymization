@@ -9,7 +9,7 @@ from ..config import (
     MIN_CONFIDENCE_SCORE,
     SUPPORTED_FILE_EXTENSIONS,
 )
-from ..handlers import get_handler
+from .handlers import get_handler
 from ..logger import setup_logger
 from .analyzer import PIIAnalyzer
 from .mapping import (

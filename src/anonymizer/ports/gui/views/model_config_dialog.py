@@ -291,15 +291,21 @@ class ModelConfigDialog:
             if model_name and model_name != "(none)":
                 download_btn.config(state="disabled")
                 status_label.config(text="Downloading...", fg="blue")
-                if self._dialog:
-                    self._dialog.update()
 
-                success = self._presenter.download_transformers_model(model_name)
-                if success:
-                    status_label.config(text="Cached", fg="green")
-                else:
-                    status_label.config(text="Failed", fg="red")
-                    download_btn.config(state="normal")
+                def download_task() -> None:
+                    success = self._presenter.download_transformers_model(model_name)
+                    if self._dialog:
+                        self._dialog.after(0, lambda: _on_download_complete(success))
+
+                def _on_download_complete(success: bool) -> None:
+                    if success:
+                        status_label.config(text="Cached", fg="green")
+                    else:
+                        status_label.config(text="Failed", fg="red")
+                        download_btn.config(state="normal")
+
+                thread = threading.Thread(target=download_task, daemon=True)
+                thread.start()
 
         model_var.trace_add("write", update_status)
         download_btn.config(command=do_download)
@@ -332,17 +338,23 @@ class ModelConfigDialog:
             self._pkg_install_btn.config(state="disabled")
         if self._pkg_status_label:
             self._pkg_status_label.config(text="Installing...", fg="blue")
-        if self._dialog:
-            self._dialog.update()
 
-        success, message = self._presenter.install_transformers_support()
+        def install_task() -> None:
+            result = self._presenter.install_transformers_support()
+            if self._dialog:
+                self._dialog.after(0, lambda: _on_install_complete(result))
 
-        if success:
-            self.update_package_status("Ready", "green", False)
-            self.show_info("Success", "Transformers support installed successfully.")
-        else:
-            self.update_package_status("Install failed", "red", True)
-            self.show_error("Error", f"Installation failed:\n{message}")
+        def _on_install_complete(result: tuple[bool, str]) -> None:
+            success, message = result
+            if success:
+                self.update_package_status("Ready", "green", False)
+                self.show_info("Success", "Transformers support installed successfully.")
+            else:
+                self.update_package_status("Install failed", "red", True)
+                self.show_error("Error", f"Installation failed:\n{message}")
+
+        thread = threading.Thread(target=install_task, daemon=True)
+        thread.start()
 
     def _handle_save(self) -> None:
         """Handle save button click."""

@@ -8,7 +8,7 @@ from docx.document import Document as DocumentClass  # type: ignore[import-untyp
 from docx.section import _Footer, _Header  # type: ignore[import-untyped]
 from docx.table import Table  # type: ignore[import-untyped]
 
-from ..logger import setup_logger
+from ...logger import setup_logger
 
 logger = setup_logger(__name__)
 
