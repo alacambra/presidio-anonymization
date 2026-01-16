@@ -28,7 +28,9 @@ class TransformersModel:
     spacy_model: str  # spaCy model for tokenization (use small for speed)
     size_mb: int  # Approximate size in MB
     description: str  # Short description
-    supported_entities: List[str] = field(default_factory=list)  # Entities this model detects
+    supported_entities: List[str] = field(
+        default_factory=list
+    )  # Entities this model detects
 
 
 # Available HuggingFace transformer models for NER
@@ -46,7 +48,15 @@ AVAILABLE_TRANSFORMERS_MODELS: Dict[str, List[TransformersModel]] = {
             "en_core_web_sm",
             500,
             "RoBERTa medical de-identification",
-            ["PERSON", "LOCATION", "DATE_TIME", "ORGANIZATION", "AGE", "ID", "PHONE_NUMBER"],
+            [
+                "PERSON",
+                "LOCATION",
+                "DATE_TIME",
+                "ORGANIZATION",
+                "AGE",
+                "ID",
+                "PHONE_NUMBER",
+            ],
         ),
         TransformersModel(
             "StanfordAIMI/stanford-deidentifier-base",
@@ -146,7 +156,9 @@ def get_nlp_engine_type() -> str:
     return NLP_ENGINE_TYPE
 
 
-def set_transformers_model_for_language(lang_code: str, model_name: Optional[str]) -> bool:
+def set_transformers_model_for_language(
+    lang_code: str, model_name: Optional[str]
+) -> bool:
     """
     Set the transformers model for a language.
 
@@ -225,7 +237,15 @@ SUPPORTED_LANGUAGES: Dict[str, str] = {
 
 
 def is_model_installed(model_name: str) -> bool:
-    """Check if a spaCy model is installed."""
+    """Check if a spaCy model is available (local storage or package)."""
+    # Lazy import to avoid circular dependency
+    from .model_storage import is_model_downloaded
+
+    # Check local storage first
+    if is_model_downloaded(model_name):
+        return True
+
+    # Fall back to package check
     try:
         import spacy.util
 
@@ -322,40 +342,6 @@ def _run_pip_install(package_spec: str, timeout: int = 300) -> tuple[bool, str]:
             return False, str(e)
 
 
-def download_spacy_model(model_name: str) -> tuple[bool, str]:
-    """
-    Download a spaCy model.
-
-    Works in both normal Python and frozen apps (PyInstaller).
-
-    Args:
-        model_name: Name of the spaCy model (e.g., 'en_core_web_trf')
-
-    Returns:
-        Tuple of (success, message)
-    """
-    if is_model_installed(model_name):
-        return True, f"Model {model_name} is already installed"
-
-    # Get the download URL for the model
-    try:
-        import spacy.about
-        from spacy.cli.download_module import get_model_filename, get_version
-
-        # Get version compatibility info
-        version = get_version(model_name, spacy.about.__version__)
-        filename = get_model_filename(model_name, version)
-        base_url = spacy.about.__download_url__
-        if not base_url.endswith("/"):
-            base_url += "/"
-        download_url = base_url + filename
-    except Exception as e:
-        return False, f"Failed to get model URL: {e}"
-
-    # Install the model
-    return _run_pip_install(download_url)
-
-
 def install_huggingface_pipelines() -> tuple[bool, str]:
     """
     Install spacy-huggingface-pipelines package.
@@ -377,13 +363,25 @@ def set_model_for_language(lang_code: str, model_name: str) -> bool:
 
     Returns True if successful, False if invalid.
     """
+    # Lazy import to avoid circular dependency
+    from .logger import setup_logger
+    logger = setup_logger(__name__)
+
     if lang_code not in AVAILABLE_MODELS:
+        logger.warning(f"[set_model_for_language] invalid lang_code:{lang_code}")
         return False
     valid_models = [m.name for m in AVAILABLE_MODELS[lang_code]]
     if model_name not in valid_models:
+        logger.warning(f"[set_model_for_language] invalid model:{model_name};valid:{valid_models}")
         return False
+
+    old_model = SUPPORTED_LANGUAGES.get(lang_code)
     SUPPORTED_LANGUAGES[lang_code] = model_name
+    logger.info(
+        f"[set_model_for_language] updated;lang:{lang_code};old:{old_model};new:{model_name}"
+    )
     return True
+
 
 # All available entity types for PII detection
 SUPPORTED_ENTITIES: List[str] = [
@@ -400,12 +398,7 @@ SUPPORTED_ENTITIES: List[str] = [
 # Default selected entities (all enabled by default)
 DEFAULT_SELECTED_ENTITIES: List[str] = SUPPORTED_ENTITIES.copy()
 
-SUPPORTED_FILE_EXTENSIONS: List[str] = [
-    ".txt",
-    ".docx",
-    ".pdf",
-    ".md"
-]
+SUPPORTED_FILE_EXTENSIONS: List[str] = [".txt", ".docx", ".pdf", ".md"]
 
 DEFAULT_LANGUAGE: str = "en"
 

@@ -145,15 +145,35 @@ def _run_pip_install(package_spec: str, timeout: int = 300) -> tuple[bool, str]:
         result = subprocess.run([sys.executable, "-m", "pip", "install", package_spec], ...)
         return (result.returncode == 0, ...)
 
+def _get_spacy_model_download_url(model_name: str) -> str:
+    """Construct the download URL for a spaCy model."""
+    import spacy.about
+
+    base_url = spacy.about.__download_url__
+    spacy_version = spacy.about.__version__
+    version_parts = spacy_version.split(".")
+    model_version = f"{version_parts[0]}.{version_parts[1]}.0"
+
+    filename = f"{model_name}-{model_version}-py3-none-any.whl"
+    return f"{base_url}/{model_name}-{model_version}/{filename}"
+
 def download_spacy_model(model_name: str) -> tuple[bool, str]:
     """Download a spaCy model, works in frozen apps."""
     if is_model_installed(model_name):
         return True, "Already installed"
 
-    # Get download URL and use pip directly
-    download_url = ...  # construct from spacy.about
-    return _run_pip_install(download_url)
+    if is_frozen():
+        # In frozen apps, use pip with direct GitHub URL
+        url = _get_spacy_model_download_url(model_name)
+        return _run_pip_install(url)
+    else:
+        # In normal Python, use spacy.cli.download
+        from spacy.cli.download import download
+        download(model_name)
+        return True, "Downloaded successfully"
 ```
+
+**Key insight**: spaCy models cannot be installed via `pip install model_name` directly - they're hosted on GitHub, not PyPI. The model names on PyPI are stub packages for Dependency Confusion attack protection. We construct the direct GitHub URL using `spacy.about.__download_url__` and the spaCy version to get the compatible model version.
 
 **Implementation in analyzer.py**:
 
@@ -265,14 +285,256 @@ pyinstaller build_macos.spec --clean
 
 The duplicate window no longer appears when clicking "Anonymize". The `freeze_support()` call in `launcher.py` successfully prevents child processes from re-executing the GUI.
 
-### 7.2 Model Download in Frozen App: IN PROGRESS
+### 7.2 Model Download in Frozen App: FIXED ✅
 
-The model download functionality using pip-as-library needs the correct spaCy API. The error `'function' object has no attribute 'get_version'` indicates the spaCy internal API has changed.
+The model download functionality now works in frozen apps by:
+
+1. Using `spacy.about.__download_url__` to get the GitHub releases base URL
+2. Constructing the model version from `spacy.about.__version__` (models use `{major}.{minor}.0`)
+3. Building the full wheel URL: `{base_url}/{model}-{version}/{model}-{version}-py3-none-any.whl`
+4. Using pip as a library (`pip._internal.cli.main`) to install the wheel directly
+
+This avoids the Dependency Confusion attack protection on PyPI (where model names are stub packages) and works without subprocess calls that would re-launch the frozen app.
 
 ---
 
-## 8. References
+## 8. Model Manager Implementation
+
+### 8.1 Overview
+
+After resolving the duplicate window issue, the model download strategy was redesigned to provide a unified approach that works identically in both frozen (PyInstaller) and normal Python environments.
+
+**New approach**:
+- Download spaCy models directly from GitHub as `.tar.gz` files
+- Extract to local app data folder
+- Load models from path using `spacy.load(path)`
+- Provide a GUI dialog accessible via File > Model Manager menu
+
+### 8.2 Architecture
+
+The Model Manager follows the MVP (Model-View-Presenter) pattern:
+
+```
+src/anonymizer/
+├── model_storage.py              # Core download/storage module (NEW)
+└── ports/gui/
+    ├── views/
+    │   └── model_manager_dialog.py   # Tkinter view (NEW)
+    └── presenters/
+        └── model_manager_presenter.py # Business logic (NEW)
+```
+
+### 8.3 Storage Locations
+
+Platform-specific app data folders:
+- **macOS**: `~/Library/Application Support/DocumentAnonymizer/models/`
+- **Windows**: `%LOCALAPPDATA%/DocumentAnonymizer/models/`
+- **Linux**: `~/.local/share/DocumentAnonymizer/models/`
+
+### 8.4 Download URL Pattern
+
+Models are downloaded from GitHub releases:
+
+```
+https://github.com/explosion/spacy-models/releases/download/{model}-{version}/{model}-{version}.tar.gz
+```
+
+Version is derived from `spacy.about.__version__` → `{major}.{minor}.0`
+
+### 8.5 Tarball Extraction
+
+The tarball structure requires nested extraction:
+
+```
+{model}-{version}.tar.gz
+└── {model}-{version}/
+    └── {model}/
+        └── {model}-{version}/  ← actual model files (meta.json, etc.)
+```
+
+After extraction, the inner directory is moved to `{models_dir}/{model_name}/`
+
+### 8.6 Key Implementation Details
+
+**model_storage.py**:
+```python
+def get_app_data_dir() -> Path:
+    """Platform-specific app data directory"""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", ...))
+    else:
+        base = Path.home() / ".local" / "share"
+    return base / "DocumentAnonymizer"
+
+def download_spacy_model(model_name: str, progress_callback: ...) -> Tuple[bool, str]:
+    """Download .tar.gz from GitHub, extract, store locally"""
+```
+
+**analyzer.py** (modified to load from local path):
+```python
+model_path = get_model_path(model_name)
+model_spec = str(model_path) if model_path else model_name
+```
+
+**config.py** (modified to check local storage first):
+```python
+def is_model_installed(model_name: str) -> bool:
+    from .model_storage import is_model_downloaded
+    if is_model_downloaded(model_name):
+        return True
+    return spacy.util.is_package(model_name)
+```
+
+### 8.7 UI Features
+
+The Model Manager dialog provides:
+- Treeview with languages as parents, models as children
+- Checkbox selection (click to toggle)
+- Columns: Model name, Size (MB), Status
+- Progress bar showing download progress (MB downloaded / total MB)
+- Download/Delete/Close buttons
+- Non-blocking UI with background threading
+
+### 8.8 Language Dropdown Filtering
+
+The main window's Language dropdown only shows languages that have at least one downloaded model:
+
+- If only English models are downloaded, only "en - English" appears
+- When models are downloaded/deleted via Model Manager, the dropdown automatically refreshes
+- If no models are available, all languages are shown (fallback)
+
+**Implementation**:
+
+- `model_storage.get_available_languages()` returns language codes with downloaded models
+- `main_window.refresh_available_languages()` updates the dropdown
+- Model Manager calls `notify_models_changed()` callback after download/delete operations
+
+### 8.9 Files Created
+
+| File | Purpose |
+| ---- | ------- |
+| `src/anonymizer/model_storage.py` | Core download and storage functions |
+| `src/anonymizer/ports/gui/views/model_manager_dialog.py` | Tkinter view for Model Manager |
+| `src/anonymizer/ports/gui/presenters/model_manager_presenter.py` | Business logic for download/delete |
+
+### 8.10 Files Modified
+
+| File | Change |
+| ---- | ------ |
+| `src/anonymizer/core/analyzer.py` | Load models from local path when available |
+| `src/anonymizer/config.py` | Check local storage first in `is_model_installed()` |
+| `src/anonymizer/ports/gui/views/main_window.py` | Added File menu with Model Manager item |
+| `src/anonymizer/ports/gui/app.py` | Wired Model Manager dialog |
+| `src/anonymizer/ports/gui/views/__init__.py` | Added ModelManagerDialog export |
+| `src/anonymizer/ports/gui/presenters/__init__.py` | Added ModelManagerPresenter export |
+
+---
+
+## 9. Configure Models Removal
+
+### 9.1 Overview
+
+The old "Configure Models" button and dialog were removed in favor of the new Model Manager accessible via the File menu.
+
+### 9.2 Files Deleted
+
+| File | Purpose (removed) |
+| ---- | ----------------- |
+| `src/anonymizer/ports/gui/views/model_config_dialog.py` | Old configuration dialog view |
+| `src/anonymizer/ports/gui/presenters/model_config_presenter.py` | Old configuration dialog presenter |
+
+### 9.3 Files Modified
+
+| File | Change |
+| ---- | ------ |
+| `src/anonymizer/ports/gui/views/main_window.py` | Removed Configure Models button and related callbacks |
+| `src/anonymizer/ports/gui/presenters/anonymizer_presenter.py` | Removed `handle_configure_models()` method |
+| `src/anonymizer/ports/gui/app.py` | Removed model_config_dialog import and wiring |
+| `src/anonymizer/ports/gui/views/__init__.py` | Removed ModelConfigDialog export |
+| `src/anonymizer/ports/gui/presenters/__init__.py` | Removed ModelConfigPresenter export |
+| `tests/test_gui_presenters.py` | Removed TestModelConfigPresenter test class |
+
+---
+
+## 10. Hierarchical Model Selection
+
+### 10.1 Overview
+
+The flat language dropdown was replaced with a hierarchical model selection menu. Users can now see and select specific downloaded models organized by language.
+
+### 10.2 UI Change
+
+**Before**: Simple combobox showing `en - English`, `es - Spanish`, etc.
+
+**After**: Cascading menu button showing:
+```
+[English: en_core_web_lg ▼]
+    ├── English >
+    │   ├── en_core_web_sm (12 MB - Small - CPU optimized)
+    │   ├── en_core_web_md (40 MB - Medium - balanced)
+    │   └── en_core_web_lg (560 MB - Large - better accuracy)
+    ├── Spanish >
+    │   └── es_core_news_md (40 MB - Medium - balanced)
+    └── German >
+        └── de_core_news_sm (12 MB - Small - CPU optimized)
+```
+
+### 10.3 Key Features
+
+- **Hierarchical display**: Languages as parent menus, models as children
+- **Only downloaded models shown**: Languages without downloaded models are hidden
+- **Auto-selection**: First available model is auto-selected on startup
+- **Empty state handling**: Shows "No models - use Model Manager" when nothing downloaded
+- **Immediate config update**: `set_model_for_language()` is called directly in `_select_model()` to ensure the correct model is used even during initialization (before callbacks are wired)
+- **Refresh on download**: Menu updates when models are downloaded/deleted via Model Manager
+
+### 10.4 Critical Fix: Transformer Model Error
+
+**Problem**: In PyInstaller builds, selecting a transformer model (e.g., `en_core_web_trf`) caused error:
+```
+[E002] Can't find factory for 'curated_transformer' for language English (en)
+```
+
+**Root Cause**: The model selection callback wasn't wired when `_populate_model_menu()` auto-selected the first model during `__init__`. This meant `SUPPORTED_LANGUAGES` still contained the default `en_core_web_trf` instead of the selected non-transformer model.
+
+**Fix**: Call `set_model_for_language(lang_code, model_name)` directly in `_select_model()` instead of relying on the callback:
+
+```python
+def _select_model(self, lang_code: str, model_name: str) -> None:
+    """Handle model selection from menu."""
+    self._selected_language.set(lang_code)
+    self._selected_model = model_name
+
+    # Update config immediately (important for initialization before callbacks are wired)
+    set_model_for_language(lang_code, model_name)
+
+    # Update button text
+    lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
+    if self._model_menu_btn:
+        self._model_menu_btn.config(text=f"{lang_name}: {model_name}")
+
+    # Notify callbacks (may not be wired yet during __init__)
+    if self._on_language_changed:
+        self._on_language_changed(lang_code)
+    if self._on_model_changed:
+        self._on_model_changed(lang_code, model_name)
+```
+
+### 10.5 Files Modified
+
+| File | Change |
+| ---- | ------ |
+| `src/anonymizer/ports/gui/views/main_window.py` | Replaced combobox with `tk.Menubutton` + cascading `tk.Menu`; added `_populate_model_menu()`, `_select_model()` methods; calls `set_model_for_language()` directly |
+| `src/anonymizer/ports/gui/app.py` | Fixed import path for `set_model_for_language`; simplified language parsing |
+| `src/anonymizer/ports/gui/presenters/anonymizer_presenter.py` | Removed `.split(" - ")[0]` parsing since `selected_language` is now just the code |
+
+---
+
+## 11. References
 
 - [PyInstaller Multiprocessing Recipe](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#multi-processing)
 - [Python multiprocessing freeze_support](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.freeze_support)
 - [pip as a library](https://pip.pypa.io/en/stable/user_guide/#using-pip-from-your-program)
+- [spaCy Models GitHub Releases](https://github.com/explosion/spacy-models/releases)

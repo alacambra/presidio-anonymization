@@ -5,8 +5,14 @@ from typing import List, Tuple
 
 import fitz  # type: ignore[import-untyped]  # PyMuPDF
 from reportlab.lib.pagesizes import letter  # type: ignore[import-untyped]
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore[import-untyped]
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer  # type: ignore[import-untyped]
+from reportlab.lib.styles import getSampleStyleSheet  # type: ignore[import-untyped]
+from reportlab.platypus import (  # type: ignore[import-untyped]
+    Flowable,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+)
+from reportlab.lib.styles import StyleSheet1  # type: ignore[import-untyped]
 
 from ...logger import setup_logger
 
@@ -44,7 +50,7 @@ class PdfHandler:
         for page_num in range(len(doc)):
             page = doc[page_num]
             page_text = page.get_text()
-            if page_text.strip():
+            if isinstance(page_text, str) and page_text.strip():
                 text_parts.append(page_text)
 
         doc.close()
@@ -85,10 +91,10 @@ class PdfHandler:
         logger.info(f"pdf file written path:{path}")
 
     def _create_story(
-        self, content: str, styles: ParagraphStyle
-    ) -> List[Paragraph | Spacer]:
+        self, content: str, styles: StyleSheet1
+    ) -> List[Flowable]:
         """Create the PDF story (list of flowables)."""
-        story: List[Paragraph | Spacer] = []
+        story: List[Flowable] = []
         paragraphs = content.split("\n")
 
         for paragraph_text in paragraphs:

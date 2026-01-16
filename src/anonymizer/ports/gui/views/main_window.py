@@ -7,12 +7,15 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
 from ....config import (
+    AVAILABLE_MODELS,
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
     SUPPORTED_ENTITIES,
     SUPPORTED_FILE_EXTENSIONS,
+    set_model_for_language,
 )
 from ....core.models import PIIEntity
+from ....model_storage import is_model_downloaded
 
 
 class AnonymizerView:
@@ -39,15 +42,20 @@ class AnonymizerView:
         self._view_mapping_btn: Optional[ttk.Button] = None
         self._status_text: Optional[tk.Text] = None
 
+        # Model selection menu widgets
+        self._model_menu_btn: Optional[tk.Menubutton] = None
+        self._model_menu: Optional[tk.Menu] = None
+        self._selected_model: Optional[str] = None
+
         # Callbacks set by presenter
         self._on_anonymize: Optional[Callable[[], None]] = None
         self._on_view_mapping: Optional[Callable[[], None]] = None
-        self._on_configure_models: Optional[Callable[[], None]] = None
         self._on_language_changed: Optional[Callable[[str], None]] = None
+        self._on_model_changed: Optional[Callable[[str, str], None]] = None
+        self._on_model_manager: Optional[Callable[[], None]] = None
 
         # Dialog factories set by composition root
         self._entity_dialog_factory: Optional[Callable] = None
-        self._model_config_dialog_factory: Optional[Callable] = None
 
         # Watch for input path changes
         self._input_path.trace_add("write", self._handle_input_path_change)
@@ -75,6 +83,11 @@ class AnonymizerView:
         """Get the confidence threshold value."""
         return self._confidence_threshold.get() if self._confidence_threshold else 0.7
 
+    @property
+    def selected_model(self) -> Optional[str]:
+        """Get the currently selected model name."""
+        return self._selected_model
+
     # Setter methods for presenter
     def set_input_path(self, path: str) -> None:
         """Set the input path value."""
@@ -93,21 +106,21 @@ class AnonymizerView:
         """Set the view mapping button callback."""
         self._on_view_mapping = callback
 
-    def set_on_configure_models(self, callback: Callable[[], None]) -> None:
-        """Set the configure models button callback."""
-        self._on_configure_models = callback
-
     def set_on_language_changed(self, callback: Callable[[str], None]) -> None:
         """Set the language changed callback."""
         self._on_language_changed = callback
 
+    def set_on_model_changed(self, callback: Callable[[str, str], None]) -> None:
+        """Set the model changed callback (lang_code, model_name)."""
+        self._on_model_changed = callback
+
+    def set_on_model_manager(self, callback: Callable[[], None]) -> None:
+        """Set the model manager menu callback."""
+        self._on_model_manager = callback
+
     def set_entity_dialog_factory(self, factory: Callable) -> None:
         """Set the entity selection dialog factory."""
         self._entity_dialog_factory = factory
-
-    def set_model_config_dialog_factory(self, factory: Callable) -> None:
-        """Set the model config dialog factory."""
-        self._model_config_dialog_factory = factory
 
     # View methods for presenter
     def get_selected_entities(self) -> List[str]:
@@ -148,6 +161,10 @@ class AnonymizerView:
         if self._model_info_label:
             self._model_info_label.config(text=text)
 
+    def refresh_available_languages(self) -> None:
+        """Refresh the model menu based on downloaded models."""
+        self._populate_model_menu()
+
     def show_mapping_window(self, mapping_data: dict) -> None:
         """Show mapping data in a new window."""
         window = tk.Toplevel(self.root)
@@ -172,12 +189,6 @@ class AnonymizerView:
             return self._entity_dialog_factory(self.root, entities, text, threshold)
         return None
 
-    def show_model_config_dialog(self) -> bool:
-        """Show the model configuration dialog."""
-        if self._model_config_dialog_factory:
-            return self._model_config_dialog_factory(self.root, self._notify_model_config_saved)
-        return False
-
     def update_display(self) -> None:
         """Force UI update."""
         self.root.update()
@@ -189,6 +200,9 @@ class AnonymizerView:
     # UI Setup methods (pure UI creation, no logic)
     def _setup_ui(self) -> None:
         """Build the user interface."""
+        # Create menu bar first
+        self._create_menu_bar()
+
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky="nsew")
 
@@ -203,6 +217,26 @@ class AnonymizerView:
         self._create_entities_section(main_frame)
         self._create_status_section(main_frame)
         self._create_buttons_section(main_frame)
+
+    def _create_menu_bar(self) -> None:
+        """Create the application menu bar."""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        file_menu.add_command(
+            label="Model Manager...", command=self._handle_model_manager_click
+        )
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+
+    def _handle_model_manager_click(self) -> None:
+        """Handle Model Manager menu click."""
+        if self._on_model_manager:
+            self._on_model_manager()
 
     def _create_input_section(self, parent: ttk.Frame) -> None:
         """Create the input file selection section."""
@@ -237,26 +271,105 @@ class AnonymizerView:
         )
 
     def _create_language_section(self, parent: ttk.Frame) -> None:
-        """Create the language selection section."""
-        ttk.Label(parent, text="Language:").grid(row=2, column=0, sticky="w", pady=5)
+        """Create hierarchical model selection with cascading menu."""
+        ttk.Label(parent, text="Model:").grid(row=2, column=0, sticky="w", pady=5)
 
-        lang_frame = ttk.Frame(parent)
-        lang_frame.grid(row=2, column=1, sticky="ew", pady=5)
+        model_frame = ttk.Frame(parent)
+        model_frame.grid(row=2, column=1, sticky="ew", pady=5)
 
-        language_combo = ttk.Combobox(
-            lang_frame,
-            textvariable=self._selected_language,
-            values=[f"{code} - {name}" for code, name in LANGUAGE_NAMES.items()],
-            state="readonly",
-            width=20,
+        # Menu button showing current selection
+        self._model_menu_btn = tk.Menubutton(
+            model_frame,
+            text="Select Model...",
+            relief="raised",
+            width=35,
         )
-        language_combo.pack(side="left")
-        language_combo.set(f"{DEFAULT_LANGUAGE} - {LANGUAGE_NAMES[DEFAULT_LANGUAGE]}")
+        self._model_menu_btn.pack(side="left")
 
-        language_combo.bind("<<ComboboxSelected>>", self._handle_language_selected)
+        # Build hierarchical menu
+        self._model_menu = tk.Menu(self._model_menu_btn, tearoff=0)
+        self._model_menu_btn["menu"] = self._model_menu
+        self._populate_model_menu()
 
-        self._model_info_label = ttk.Label(lang_frame, text="", foreground="gray")
+        # Model info label
+        self._model_info_label = ttk.Label(model_frame, text="", foreground="gray")
         self._model_info_label.pack(side="left", padx=(15, 0))
+
+    def _populate_model_menu(self) -> None:
+        """Build cascading menu with downloaded models by language."""
+        if not self._model_menu:
+            return
+
+        self._model_menu.delete(0, "end")
+        has_any_models = False
+        first_model_info: Optional[tuple[str, str]] = None
+
+        for lang_code, lang_name in LANGUAGE_NAMES.items():
+            # Get downloaded models for this language
+            models = AVAILABLE_MODELS.get(lang_code, [])
+            downloaded = [m for m in models if is_model_downloaded(m.name)]
+
+            if not downloaded:
+                continue  # Skip languages with no downloaded models
+
+            has_any_models = True
+
+            # Create submenu for this language
+            lang_menu = tk.Menu(self._model_menu, tearoff=0)
+            self._model_menu.add_cascade(label=lang_name, menu=lang_menu)
+
+            for model in downloaded:
+                label = f"{model.name} ({model.size_mb} MB - {model.description})"
+                # Use default argument to capture current values
+                lang_menu.add_command(
+                    label=label,
+                    command=lambda lc=lang_code, mn=model.name: self._select_model(lc, mn),
+                )
+
+                # Track first model for auto-selection
+                if first_model_info is None:
+                    first_model_info = (lang_code, model.name)
+
+        if not has_any_models:
+            self._model_menu.add_command(
+                label="No models downloaded",
+                state="disabled",
+            )
+            self._model_menu.add_separator()
+            self._model_menu.add_command(
+                label="Use File > Model Manager to download",
+                state="disabled",
+            )
+            if self._model_menu_btn:
+                self._model_menu_btn.config(text="No models - use Model Manager")
+        elif self._selected_model is None and first_model_info:
+            # Auto-select first available model on initial load
+            self._select_model(first_model_info[0], first_model_info[1])
+
+    def _select_model(self, lang_code: str, model_name: str) -> None:
+        """Handle model selection from menu."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"[_select_model] called;lang:{lang_code};model:{model_name}")
+
+        self._selected_language.set(lang_code)
+        self._selected_model = model_name
+
+        # Update config immediately (important for initialization before callbacks are wired)
+        result = set_model_for_language(lang_code, model_name)
+        logger.info(f"[_select_model] set_model_for_language returned:{result}")
+
+        # Update button text
+        lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
+        if self._model_menu_btn:
+            self._model_menu_btn.config(text=f"{lang_name}: {model_name}")
+
+        # Notify callbacks
+        if self._on_language_changed:
+            self._on_language_changed(lang_code)
+        if self._on_model_changed:
+            self._on_model_changed(lang_code, model_name)
 
     def _create_threshold_section(self, parent: ttk.Frame) -> None:
         """Create confidence threshold slider section."""
@@ -365,13 +478,6 @@ class AnonymizerView:
         )
         self._view_mapping_btn.grid(row=0, column=1, padx=10)
 
-        ttk.Button(
-            button_frame,
-            text="Configure Models...",
-            command=self._handle_configure_models_click,
-            width=15,
-        ).grid(row=0, column=2, padx=10)
-
     # Event handlers (simple delegation, no logic)
     def _handle_anonymize_click(self) -> None:
         """Handle anonymize button click - delegate to callback."""
@@ -382,19 +488,6 @@ class AnonymizerView:
         """Handle view mapping button click - delegate to callback."""
         if self._on_view_mapping:
             self._on_view_mapping()
-
-    def _handle_configure_models_click(self) -> None:
-        """Handle configure models button click - delegate to callback."""
-        if self._on_configure_models:
-            self._on_configure_models()
-
-    def _handle_language_selected(self, event: tk.Event) -> None:
-        """Handle language selection change."""
-        selection = self._selected_language.get()
-        language_code = selection.split(" - ")[0]
-        self._selected_language.set(language_code)
-        if self._on_language_changed:
-            self._on_language_changed(language_code)
 
     def _handle_threshold_change(self, value: str) -> None:
         """Update label when threshold slider changes."""

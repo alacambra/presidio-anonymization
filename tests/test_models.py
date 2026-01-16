@@ -45,11 +45,11 @@ class TestAnonymizationResult:
         result = AnonymizationResult(
             original_text="Hello John",
             anonymized_text="Hello <PERSON_1>",
-            mappings={"<PERSON_1>": "John"},
+            mappings={"<PERSON_1>": {"text": "John", "entity_type": "PERSON", "score": 0.9}},
             entities_found=[entity],
         )
 
-        assert result.mappings == {"<PERSON_1>": "John"}
+        assert result.mappings["<PERSON_1>"]["text"] == "John"
         assert len(result.entities_found) == 1
 
 

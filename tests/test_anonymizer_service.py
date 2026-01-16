@@ -441,6 +441,7 @@ class TestAnonymizerServiceAnonymizeFileWithSelection:
                 selection_callback=select_partial,
             )
 
+            assert result is not None
             assert result.entities_count == expected_count
 
     def test_with_selection_saves_excluded_entities(

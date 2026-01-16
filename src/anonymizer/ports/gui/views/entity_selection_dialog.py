@@ -48,7 +48,8 @@ class EntitySelectionDialog:
         """
         self._create_dialog()
         self._populate_tree()
-        self._dialog.wait_window()
+        if self._dialog:
+            self._dialog.wait_window()
         return self._presenter.get_result()
 
     def update_item_selection(self, item_id: str, selected: bool) -> None:

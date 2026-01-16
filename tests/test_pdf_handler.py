@@ -49,7 +49,9 @@ class TestPdfHandler:
             doc = fitz.open(path)
             text = ""
             for page in doc:
-                text += page.get_text()
+                page_text = page.get_text()
+                if isinstance(page_text, str):
+                    text += page_text
             doc.close()
 
             assert "Test content" in text
@@ -118,7 +120,9 @@ class TestPdfHandler:
             doc = fitz.open(path)
             text = ""
             for page in doc:
-                text += page.get_text()
+                page_text = page.get_text()
+                if isinstance(page_text, str):
+                    text += page_text
             doc.close()
 
             assert "<PERSON_1>" in text

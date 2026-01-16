@@ -1,6 +1,32 @@
 """PII detection using Microsoft Presidio."""
 
+import sys
 from typing import List, Optional
+
+# Register spaCy transformer factories before any model loading
+# NOTE: In PyInstaller frozen builds, transformer packages are excluded because
+# TorchScript requires .py source files which aren't preserved. Skip import
+# in frozen apps to avoid errors.
+if not getattr(sys, 'frozen', False):
+    try:
+        from spacy_curated_transformers.pipeline import transformer as _sct  # noqa: F401
+
+        # Verify factory registration
+        from spacy.language import Language as _Lang
+        if hasattr(_Lang, 'factories') and 'curated_transformer' in _Lang.factories:
+            pass  # Factory registered successfully
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "[analyzer] curated_transformer factory NOT registered after import"
+            )
+    except ImportError:
+        pass  # Package not installed, transformer models won't work
+
+    try:
+        import spacy_transformers as _st  # noqa: F401
+    except ImportError:
+        pass  # Package not installed
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -10,13 +36,12 @@ from ..config import (
     MIN_CONFIDENCE_SCORE,
     SUPPORTED_LANGUAGES,
     TransformersModel,
-    download_spacy_model,
     get_nlp_engine_type,
     get_transformers_model_for_language,
-    is_frozen,
     is_model_installed,
 )
 from ..logger import setup_logger
+from ..model_storage import download_spacy_model, get_model_path, is_model_downloaded
 from .models import PIIEntity
 
 logger = setup_logger(__name__)
@@ -86,41 +111,104 @@ class PIIAnalyzer:
 
         return self._create_spacy_engine()
 
+    def _ensure_transformer_factories_registered(self) -> None:
+        """
+        Ensure spaCy transformer factories are registered.
+
+        This is critical for PyInstaller builds where the factory registration
+        from the runtime hook may not persist. We re-import the modules here
+        to ensure the factories are registered in the same Language instance
+        that will be used for model loading.
+        """
+        from spacy.language import Language
+
+        # Check if curated_transformer factory is already registered
+        if hasattr(Language, 'factories') and 'curated_transformer' in Language.factories:
+            logger.info("[_ensure_transformer_factories_registered] curated_transformer already registered")
+            return
+
+        logger.info("[_ensure_transformer_factories_registered] registering transformer factories...")
+
+        # Import to trigger factory registration
+        try:
+            from spacy_curated_transformers.pipeline import transformer  # noqa: F401
+            logger.info("[_ensure_transformer_factories_registered] spacy_curated_transformers imported")
+        except ImportError as e:
+            logger.warning(f"[_ensure_transformer_factories_registered] spacy_curated_transformers failed:{e}")
+
+        try:
+            import spacy_transformers  # noqa: F401
+            logger.info("[_ensure_transformer_factories_registered] spacy_transformers imported")
+        except ImportError as e:
+            logger.warning(f"[_ensure_transformer_factories_registered] spacy_transformers failed:{e}")
+
+        # Verify registration
+        if hasattr(Language, 'factories'):
+            if 'curated_transformer' in Language.factories:
+                logger.info("[_ensure_transformer_factories_registered] curated_transformer now registered")
+            else:
+                factories = list(Language.factories.keys())
+                logger.error(
+                    f"[_ensure_transformer_factories_registered] curated_transformer NOT registered;"
+                    f"available:{factories[:15]}"
+                )
+
     def _ensure_model_available(self, model_name: str) -> None:
         """
         Ensure a spaCy model is available, downloading if necessary.
 
-        In frozen apps, uses our download function to avoid subprocess issues.
+        Checks local storage first, then package installation, then downloads.
         Raises OSError if model cannot be made available.
         """
-        if is_model_installed(model_name):
+        # Check local storage first
+        if is_model_downloaded(model_name):
+            logger.info(f"[_ensure_model_available] found in local storage;model:{model_name}")
             return
 
-        logger.info(f"[_ensure_model_available] model not installed, downloading;model:{model_name}")
+        # Check if installed as package (backward compatibility)
+        if is_model_installed(model_name):
+            logger.info(f"[_ensure_model_available] found as package;model:{model_name}")
+            return
+
+        # Download to local storage
+        logger.info(f"[_ensure_model_available] downloading to storage;model:{model_name}")
 
         success, message = download_spacy_model(model_name)
         if not success:
             raise OSError(f"Failed to download model {model_name}: {message}")
 
-        logger.info(f"[_ensure_model_available] model downloaded;model:{model_name}")
+        logger.info(f"[_ensure_model_available] download complete;model:{model_name}")
 
     def _create_spacy_engine(self) -> AnalyzerEngine:
         """Create a spaCy-based analyzer engine."""
         model_name = SUPPORTED_LANGUAGES[self.language]
 
         logger.info(
-            f"[_create_spacy_engine] creating spacy engine;"
-            f"language:{self.language};model:{model_name}"
+            f"[_create_spacy_engine] reading model from config;"
+            f"language:{self.language};model:{model_name};"
+            f"all_langs:{SUPPORTED_LANGUAGES}"
         )
 
+        # For transformer models, ensure factory is registered right before loading
+        if "_trf" in model_name:
+            self._ensure_transformer_factories_registered()
+
         # Ensure model is available before calling Presidio
-        # This prevents Presidio from using subprocess to download in frozen apps
         self._ensure_model_available(model_name)
+
+        # Determine model path: use local storage if available, otherwise package name
+        model_path = get_model_path(model_name)
+        model_spec = str(model_path) if model_path else model_name
+
+        logger.info(
+            f"[_create_spacy_engine] creating spacy engine;"
+            f"language:{self.language};model:{model_name};path:{model_spec}"
+        )
 
         configuration = {
             "nlp_engine_name": "spacy",
             "models": [
-                {"lang_code": self.language, "model_name": model_name}
+                {"lang_code": self.language, "model_name": model_spec}
             ],
         }
 
@@ -136,19 +224,23 @@ class PIIAnalyzer:
         """Create a HuggingFace transformers-based analyzer engine."""
         from presidio_analyzer.nlp_engine import TransformersNlpEngine
 
-        logger.info(
-            f"[_create_transformers_engine] creating transformers engine;"
-            f"language:{self.language};model:{model.name};spacy:{model.spacy_model}"
-        )
-
         # Ensure spaCy model is available (transformers engine still needs it for tokenization)
         self._ensure_model_available(model.spacy_model)
+
+        # Determine spaCy model path: use local storage if available, otherwise package name
+        spacy_path = get_model_path(model.spacy_model)
+        spacy_spec = str(spacy_path) if spacy_path else model.spacy_model
+
+        logger.info(
+            f"[_create_transformers_engine] creating transformers engine;"
+            f"language:{self.language};model:{model.name};spacy:{spacy_spec}"
+        )
 
         models = [
             {
                 "lang_code": self.language,
                 "model_name": {
-                    "spacy": model.spacy_model,
+                    "spacy": spacy_spec,
                     "transformers": model.name,
                 },
             }

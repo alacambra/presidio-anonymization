@@ -60,7 +60,7 @@ class AnonymizerPresenter:
             return
 
         # Get configuration from view
-        language = self.view.selected_language.split(" - ")[0]
+        language = self.view.selected_language
         threshold = self.view.confidence_threshold
 
         # Log configuration
@@ -114,10 +114,6 @@ class AnonymizerPresenter:
 
         except Exception as e:
             self.view.show_error("Error", f"Could not load mapping: {e}")
-
-    def handle_configure_models(self) -> None:
-        """Handle configure models button click - delegates to ModelConfigPresenter."""
-        self.view.show_model_config_dialog()
 
     def get_model_info_for_language(self, language: str) -> str:
         """Get model info string for display."""

@@ -2,6 +2,10 @@
 
 from .anonymizer_presenter import AnonymizerPresenter
 from .entity_selection_presenter import EntitySelectionPresenter
-from .model_config_presenter import ModelConfigPresenter
+from .model_manager_presenter import ModelManagerPresenter
 
-__all__ = ["AnonymizerPresenter", "EntitySelectionPresenter", "ModelConfigPresenter"]
+__all__ = [
+    "AnonymizerPresenter",
+    "EntitySelectionPresenter",
+    "ModelManagerPresenter",
+]

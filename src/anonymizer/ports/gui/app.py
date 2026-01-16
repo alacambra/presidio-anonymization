@@ -1,9 +1,10 @@
 """Composition root - wires all dependencies for the GUI application."""
 
+from ...config import set_model_for_language
 from .presenters.anonymizer_presenter import AnonymizerPresenter
 from .views.entity_selection_dialog import create_entity_selection_dialog
 from .views.main_window import AnonymizerView
-from .views.model_config_dialog import create_model_config_dialog
+from .views.model_manager_dialog import create_model_manager_dialog
 
 
 def create_application() -> AnonymizerView:
@@ -25,7 +26,6 @@ def create_application() -> AnonymizerView:
     # Wire callbacks from view to presenter
     view.set_on_anonymize(presenter.handle_anonymize)
     view.set_on_view_mapping(presenter.handle_view_mapping)
-    view.set_on_configure_models(presenter.handle_configure_models)
 
     # Wire language change callback to update model info
     def on_language_changed(language: str) -> None:
@@ -34,14 +34,33 @@ def create_application() -> AnonymizerView:
 
     view.set_on_language_changed(on_language_changed)
 
+    # Wire model change callback to update config
+    def on_model_changed(lang_code: str, model_name: str) -> None:
+        set_model_for_language(lang_code, model_name)
+
+    view.set_on_model_changed(on_model_changed)
+
     # Set dialog factories
     view.set_entity_dialog_factory(create_entity_selection_dialog)
-    view.set_model_config_dialog_factory(create_model_config_dialog)
 
-    # Initialize model info display
-    initial_language = view.selected_language.split(" - ")[0]
-    model_info = presenter.get_model_info_for_language(initial_language)
-    view.set_model_info_text(model_info)
+    # Wire Model Manager menu
+    def on_model_manager() -> None:
+        def on_models_changed() -> None:
+            view.refresh_available_languages()
+            # Update model info display for current language
+            language = view.selected_language
+            model_info = presenter.get_model_info_for_language(language)
+            view.set_model_info_text(model_info)
+
+        create_model_manager_dialog(view.root, on_models_changed)
+
+    view.set_on_model_manager(on_model_manager)
+
+    # Initialize model info display (will be set when model is auto-selected)
+    initial_language = view.selected_language
+    if initial_language:
+        model_info = presenter.get_model_info_for_language(initial_language)
+        view.set_model_info_text(model_info)
 
     return view
 

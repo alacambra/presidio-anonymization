@@ -5,7 +5,6 @@ import pytest
 
 from anonymizer.ports.gui.presenters.anonymizer_presenter import AnonymizerPresenter
 from anonymizer.ports.gui.presenters.entity_selection_presenter import EntitySelectionPresenter
-from anonymizer.ports.gui.presenters.model_config_presenter import ModelConfigPresenter
 from anonymizer.core.models import PIIEntity
 
 
@@ -237,120 +236,211 @@ class TestEntitySelectionPresenter:
         assert self.presenter.get_threshold() == 0.75
 
 
-class TestModelConfigPresenter:
-    """Tests for ModelConfigPresenter."""
+class TestModelManagerPresenter:
+    """Tests for ModelManagerPresenter."""
 
-    def setup_method(self) -> None:
-        """Set up test fixtures."""
-        self.mock_view = Mock()
-        self.presenter = ModelConfigPresenter(self.mock_view)
+    def test_get_models_by_language_includes_download_status(self) -> None:
+        """Should include download status for each model."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
 
-    def test_get_initial_engine_type(self) -> None:
-        """Should return current engine type."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.get_nlp_engine_type", return_value="spacy"):
-            result = self.presenter.get_initial_engine_type()
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
 
-        assert result == "spacy"
+        with patch(
+            "anonymizer.ports.gui.presenters.model_manager_presenter.is_model_downloaded",
+            side_effect=lambda n: n == "en_core_web_sm",
+        ):
+            result = presenter.get_models_by_language()
 
-    def test_get_available_languages(self) -> None:
-        """Should return available languages."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.LANGUAGE_NAMES", {"en": "English", "de": "German"}):
-            result = self.presenter.get_available_languages()
+        # Find English models
+        en_models = None
+        for lang_code, lang_name, models in result:
+            if lang_code == "en":
+                en_models = models
+                break
 
+        assert en_models is not None
+        sm_model = next(m for m in en_models if m["name"] == "en_core_web_sm")
+        lg_model = next(m for m in en_models if m["name"] == "en_core_web_lg")
+        assert sm_model["downloaded"] is True
+        assert lg_model["downloaded"] is False
+
+    def test_download_already_in_progress_shows_error(self) -> None:
+        """Should show error when download already in progress."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
+        import threading
+
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
+
+        # Simulate active download thread
+        presenter._download_thread = Mock(spec=threading.Thread)
+        presenter._download_thread.is_alive.return_value = True
+
+        presenter.download_models(["en_core_web_sm"])
+
+        mock_view.show_error.assert_called_once()
+        assert "in progress" in mock_view.show_error.call_args[0][1]
+
+    def test_download_already_downloaded_shows_info(self) -> None:
+        """Should show info when models already downloaded."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
+
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
+
+        with patch(
+            "anonymizer.ports.gui.presenters.model_manager_presenter.is_model_downloaded",
+            return_value=True,
+        ):
+            presenter.download_models(["en_core_web_sm"])
+
+        mock_view.show_info.assert_called_once()
+        assert "already downloaded" in mock_view.show_info.call_args[0][1]
+
+    def test_delete_not_downloaded_shows_info(self) -> None:
+        """Should show info when trying to delete non-downloaded models."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
+
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
+
+        with patch(
+            "anonymizer.ports.gui.presenters.model_manager_presenter.is_model_downloaded",
+            return_value=False,
+        ):
+            presenter.delete_models(["en_core_web_sm"])
+
+        mock_view.show_info.assert_called_once()
+        assert "not downloaded" in mock_view.show_info.call_args[0][1]
+
+    def test_delete_success_notifies_models_changed(self) -> None:
+        """Should notify view when models are deleted."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
+
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
+
+        with patch(
+            "anonymizer.ports.gui.presenters.model_manager_presenter.is_model_downloaded",
+            return_value=True,
+        ), patch(
+            "anonymizer.ports.gui.presenters.model_manager_presenter.delete_model",
+            return_value=(True, "Deleted"),
+        ):
+            presenter.delete_models(["en_core_web_sm"])
+
+        mock_view.notify_models_changed.assert_called_once()
+        mock_view.refresh_tree.assert_called_once()
+
+    def test_cancel_download_sets_flag(self) -> None:
+        """Should set cancel flag when cancel_download called."""
+        from anonymizer.ports.gui.presenters.model_manager_presenter import (
+            ModelManagerPresenter,
+        )
+
+        mock_view = Mock()
+        presenter = ModelManagerPresenter(mock_view)
+
+        presenter.cancel_download()
+
+        assert presenter._cancel_download is True
+
+
+class TestModelManagerDialogDestroyedState:
+    """Tests for ModelManagerDialog destroyed state handling."""
+
+    def test_schedule_ui_update_skips_when_destroyed(self) -> None:
+        """Should skip UI updates when dialog is destroyed."""
+        from anonymizer.ports.gui.views.model_manager_dialog import ModelManagerDialog
+
+        # Create dialog without showing it
+        mock_parent = Mock()
+        dialog = ModelManagerDialog(mock_parent)
+        dialog._is_destroyed = True
+        dialog._dialog = Mock()
+
+        callback = Mock()
+        dialog.schedule_ui_update(callback)
+
+        # Should not schedule the callback
+        dialog._dialog.after.assert_not_called()
+
+    def test_update_progress_skips_when_destroyed(self) -> None:
+        """Should skip progress updates when dialog is destroyed."""
+        from anonymizer.ports.gui.views.model_manager_dialog import ModelManagerDialog
+        from unittest.mock import MagicMock
+
+        mock_parent = Mock()
+        dialog = ModelManagerDialog(mock_parent)
+        dialog._is_destroyed = True
+        # Use MagicMock which supports __setitem__
+        dialog._progress_bar = MagicMock()
+        dialog._progress_label = Mock()
+
+        # Should not raise exception
+        dialog.update_progress(10.0, 100.0, "test_model")
+
+        # Should not update widgets (early return due to _is_destroyed)
+        dialog._progress_bar.__setitem__.assert_not_called()
+        dialog._progress_label.config.assert_not_called()
+
+    def test_update_model_status_skips_when_destroyed(self) -> None:
+        """Should skip status updates when dialog is destroyed."""
+        from anonymizer.ports.gui.views.model_manager_dialog import ModelManagerDialog
+
+        mock_parent = Mock()
+        dialog = ModelManagerDialog(mock_parent)
+        dialog._is_destroyed = True
+        dialog._tree = Mock()
+        dialog._item_ids = {"test_model": "item1"}
+
+        # Should not raise exception
+        dialog.update_model_status("test_model", "Downloaded", "downloaded")
+
+        # Should not update tree
+        dialog._tree.item.assert_not_called()
+
+
+class TestGetAvailableLanguages:
+    """Tests for get_available_languages function."""
+
+    def test_only_checks_local_downloads(self) -> None:
+        """Should only check local downloads, not pip-installed packages."""
+        from anonymizer.model_storage import get_available_languages
+
+        with patch(
+            "anonymizer.model_storage.is_model_downloaded",
+            side_effect=lambda n: n in ["en_core_web_sm", "de_core_news_sm"],
+        ):
+            result = get_available_languages()
+
+        # Should only include languages with locally downloaded models
         assert "en" in result
         assert "de" in result
+        # es and ca have no local downloads, so should not be included
+        # even if they might be pip-installed
+        assert "es" not in result
+        assert "ca" not in result
 
-    def test_is_spacy_model_installed(self) -> None:
-        """Should check if spaCy model is installed."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.is_model_installed", return_value=True):
-            result = self.presenter.is_spacy_model_installed("en_core_web_lg")
+    def test_returns_empty_when_no_downloads(self) -> None:
+        """Should return empty list when no models downloaded."""
+        from anonymizer.model_storage import get_available_languages
 
-        assert result is True
+        with patch(
+            "anonymizer.model_storage.is_model_downloaded",
+            return_value=False,
+        ):
+            result = get_available_languages()
 
-    def test_is_transformers_available(self) -> None:
-        """Should check if transformers package is available."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.is_huggingface_pipelines_available", return_value=False):
-            result = self.presenter.is_transformers_available()
-
-        assert result is False
-
-    def test_is_transformers_model_cached_empty_name(self) -> None:
-        """Should return False for empty model name."""
-        result = self.presenter.is_transformers_model_cached("")
-        assert result is False
-
-        result = self.presenter.is_transformers_model_cached("(none)")
-        assert result is False
-
-    def test_is_transformers_model_cached_valid_name(self) -> None:
-        """Should check cache status for valid model name."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.is_transformers_model_cached", return_value=True):
-            result = self.presenter.is_transformers_model_cached("some-model")
-
-        assert result is True
-
-    def test_validate_and_save_spacy_success(self) -> None:
-        """Should save spaCy configuration successfully."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.set_nlp_engine_type") as mock_set_engine, \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.set_model_for_language") as mock_set_model, \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.set_transformers_model_for_language") as mock_set_transformers:
-
-            success, message = self.presenter.validate_and_save(
-                engine_type="spacy",
-                spacy_selections={"en": "en_core_web_lg"},
-                transformers_selections={"en": "(none)"}
-            )
-
-        assert success is True
-        assert "spacy" in message
-        mock_set_engine.assert_called_once_with("spacy")
-        mock_set_model.assert_called_once_with("en", "en_core_web_lg")
-        mock_set_transformers.assert_called_once_with("en", None)
-
-    def test_validate_and_save_transformers_no_package(self) -> None:
-        """Should fail when transformers package not installed and no progress callback."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.is_huggingface_pipelines_available", return_value=False), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.install_huggingface_pipelines", return_value=(False, "Install failed")):
-
-            success, message = self.presenter.validate_and_save(
-                engine_type="transformers",
-                spacy_selections={},
-                transformers_selections={}
-            )
-
-        assert success is False
-        assert "transformers support" in message.lower()
-
-    def test_validate_and_save_transformers_with_download(self) -> None:
-        """Should download uncached models when saving transformers config."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.is_huggingface_pipelines_available", return_value=True), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.is_transformers_model_cached", return_value=False), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.download_transformers_model", return_value=True) as mock_download, \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.set_nlp_engine_type"), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.set_model_for_language"), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.set_transformers_model_for_language"), \
-             patch("anonymizer.ports.gui.presenters.model_config_presenter.AVAILABLE_TRANSFORMERS_MODELS", {}):
-
-            success, message = self.presenter.validate_and_save(
-                engine_type="transformers",
-                spacy_selections={},
-                transformers_selections={"en": "some-model"}
-            )
-
-        assert success is True
-        mock_download.assert_called_once_with("some-model")
-
-    def test_install_transformers_support(self) -> None:
-        """Should call install function."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.install_huggingface_pipelines", return_value=(True, "Success")):
-            success, message = self.presenter.install_transformers_support()
-
-        assert success is True
-        assert message == "Success"
-
-    def test_download_transformers_model(self) -> None:
-        """Should call download function."""
-        with patch("anonymizer.ports.gui.presenters.model_config_presenter.download_transformers_model", return_value=True):
-            result = self.presenter.download_transformers_model("some-model")
-
-        assert result is True
+        assert result == []

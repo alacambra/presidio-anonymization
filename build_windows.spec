@@ -7,6 +7,7 @@ To build on Windows:
 2. Run: pyinstaller build_windows.spec
 
 Note: spaCy models are downloaded on-demand by the user when selecting a language.
+Note: Transformer models (*_trf) are excluded due to TorchScript requiring source files.
 """
 
 block_cipher = None
@@ -29,10 +30,16 @@ a = Analysis(
         'tiktoken_ext',
         'tiktoken_ext.openai_public',
     ],
-    hookspath=[],
+    # Exclude transformer packages - TorchScript requires .py source files which
+    # PyInstaller doesn't preserve. Basic spaCy models (sm/md/lg) still work.
+    excludes=[
+        'spacy_curated_transformers',
+        'curated_transformers',
+        'spacy_transformers',
+    ],
+    hookspath=['hooks'],  # Custom hooks directory
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
+    runtime_hooks=['hooks/rthook_presidio.py'],  # Runtime hook for path patching
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
