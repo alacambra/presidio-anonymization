@@ -1,0 +1,173 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 0.1.0)'
+        required: false
+        default: '0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'pyproject.toml'
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build distribution
+        run: python scripts/windows/build.py --version ${{ steps.version.outputs.version }}
+
+      - name: Create dist directory
+        run: mkdir -p dist
+        shell: bash
+
+      - name: Build installer with Inno Setup
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.4
+        with:
+          path: scripts/windows/templates/installer.iss
+          options: /DAppVersion=${{ steps.version.outputs.version }} /DSourceDir=${{ github.workspace }}\build\DocumentAnonymizer /DOutputDir=${{ github.workspace }}\dist
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-${{ steps.version.outputs.version }}-windows
+          path: dist/DocumentAnonymizer-${{ steps.version.outputs.version }}-Setup.exe
+          retention-days: 30
+
+  build-macos-arm64:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build app bundle
+        run: python scripts/macos/build.py --version ${{ steps.version.outputs.version }} --arch aarch64
+
+      - name: Create DMG
+        run: python scripts/macos/create_dmg.py --version ${{ steps.version.outputs.version }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-${{ steps.version.outputs.version }}-macos-arm64
+          path: dist/DocumentAnonymizer-${{ steps.version.outputs.version }}.dmg
+          retention-days: 30
+
+  build-macos-x64:
+    runs-on: macos-13  # Intel runner
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build app bundle
+        run: python scripts/macos/build.py --version ${{ steps.version.outputs.version }} --arch x86_64
+
+      - name: Create DMG
+        run: python scripts/macos/create_dmg.py --version ${{ steps.version.outputs.version }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentAnonymizer-${{ steps.version.outputs.version }}-macos-x64
+          path: dist/DocumentAnonymizer-${{ steps.version.outputs.version }}.dmg
+          retention-days: 30
+
+  create-release:
+    needs: [build-windows, build-macos-arm64, build-macos-x64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release
+
+          # Windows installer
+          cp artifacts/DocumentAnonymizer-${VERSION}-windows/*.exe release/DocumentAnonymizer-${VERSION}-Setup.exe
+
+          # macOS ARM64 DMG
+          cp artifacts/DocumentAnonymizer-${VERSION}-macos-arm64/*.dmg release/DocumentAnonymizer-${VERSION}-macos-arm64.dmg
+
+          # macOS x64 DMG
+          cp artifacts/DocumentAnonymizer-${VERSION}-macos-x64/*.dmg release/DocumentAnonymizer-${VERSION}-macos-x64.dmg
+
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

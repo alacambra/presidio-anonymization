@@ -1,32 +1,17 @@
 """PII detection using Microsoft Presidio."""
 
-import sys
 from typing import List, Optional
 
 # Register spaCy transformer factories before any model loading
-# NOTE: In PyInstaller frozen builds, transformer packages are excluded because
-# TorchScript requires .py source files which aren't preserved. Skip import
-# in frozen apps to avoid errors.
-if not getattr(sys, 'frozen', False):
-    try:
-        from spacy_curated_transformers.pipeline import transformer as _sct  # noqa: F401
+try:
+    from spacy_curated_transformers.pipeline import transformer as _sct  # noqa: F401
+except ImportError:
+    pass  # Package not installed, transformer models won't work
 
-        # Verify factory registration
-        from spacy.language import Language as _Lang
-        if hasattr(_Lang, 'factories') and 'curated_transformer' in _Lang.factories:
-            pass  # Factory registered successfully
-        else:
-            import logging
-            logging.getLogger(__name__).warning(
-                "[analyzer] curated_transformer factory NOT registered after import"
-            )
-    except ImportError:
-        pass  # Package not installed, transformer models won't work
-
-    try:
-        import spacy_transformers as _st  # noqa: F401
-    except ImportError:
-        pass  # Package not installed
+try:
+    import spacy_transformers as _st  # noqa: F401
+except ImportError:
+    pass  # Package not installed
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -111,48 +96,6 @@ class PIIAnalyzer:
 
         return self._create_spacy_engine()
 
-    def _ensure_transformer_factories_registered(self) -> None:
-        """
-        Ensure spaCy transformer factories are registered.
-
-        This is critical for PyInstaller builds where the factory registration
-        from the runtime hook may not persist. We re-import the modules here
-        to ensure the factories are registered in the same Language instance
-        that will be used for model loading.
-        """
-        from spacy.language import Language
-
-        # Check if curated_transformer factory is already registered
-        if hasattr(Language, 'factories') and 'curated_transformer' in Language.factories:
-            logger.info("[_ensure_transformer_factories_registered] curated_transformer already registered")
-            return
-
-        logger.info("[_ensure_transformer_factories_registered] registering transformer factories...")
-
-        # Import to trigger factory registration
-        try:
-            from spacy_curated_transformers.pipeline import transformer  # noqa: F401
-            logger.info("[_ensure_transformer_factories_registered] spacy_curated_transformers imported")
-        except ImportError as e:
-            logger.warning(f"[_ensure_transformer_factories_registered] spacy_curated_transformers failed:{e}")
-
-        try:
-            import spacy_transformers  # noqa: F401
-            logger.info("[_ensure_transformer_factories_registered] spacy_transformers imported")
-        except ImportError as e:
-            logger.warning(f"[_ensure_transformer_factories_registered] spacy_transformers failed:{e}")
-
-        # Verify registration
-        if hasattr(Language, 'factories'):
-            if 'curated_transformer' in Language.factories:
-                logger.info("[_ensure_transformer_factories_registered] curated_transformer now registered")
-            else:
-                factories = list(Language.factories.keys())
-                logger.error(
-                    f"[_ensure_transformer_factories_registered] curated_transformer NOT registered;"
-                    f"available:{factories[:15]}"
-                )
-
     def _ensure_model_available(self, model_name: str) -> None:
         """
         Ensure a spaCy model is available, downloading if necessary.
@@ -188,10 +131,6 @@ class PIIAnalyzer:
             f"language:{self.language};model:{model_name};"
             f"all_langs:{SUPPORTED_LANGUAGES}"
         )
-
-        # For transformer models, ensure factory is registered right before loading
-        if "_trf" in model_name:
-            self._ensure_transformer_factories_registered()
 
         # Ensure model is available before calling Presidio
         self._ensure_model_available(model_name)

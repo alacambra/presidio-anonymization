@@ -348,17 +348,11 @@ class AnonymizerView:
 
     def _select_model(self, lang_code: str, model_name: str) -> None:
         """Handle model selection from menu."""
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.info(f"[_select_model] called;lang:{lang_code};model:{model_name}")
-
         self._selected_language.set(lang_code)
         self._selected_model = model_name
 
         # Update config immediately (important for initialization before callbacks are wired)
-        result = set_model_for_language(lang_code, model_name)
-        logger.info(f"[_select_model] set_model_for_language returned:{result}")
+        set_model_for_language(lang_code, model_name)
 
         # Update button text
         lang_name = LANGUAGE_NAMES.get(lang_code, lang_code)
